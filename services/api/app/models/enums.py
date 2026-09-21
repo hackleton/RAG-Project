@@ -1,8 +1,9 @@
 """Domain enumerations.
 
-Stored as VARCHAR + CHECK constraint (`native_enum=False`) rather than a
-Postgres ENUM type: adding a value later is a cheap constraint swap instead of
-an `ALTER TYPE` that locks and cannot run inside every migration context.
+Stored as plain string columns (`native_enum=False`). SQL Server has no enum
+type, so the only database-side alternative is a CHECK constraint - and every
+new enum value would then be a schema migration. `AccessLevel` and
+`DocumentStatus` both expect to gain values, so validation stays in Python.
 """
 
 from __future__ import annotations

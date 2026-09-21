@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import Enum, Float, ForeignKey, Index, Integer, String, Text
+from sqlalchemy import Enum, Float, ForeignKey, Index, Integer, Unicode, UnicodeText
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.types import Uuid
 
@@ -23,7 +23,7 @@ class ChatSession(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     user_id: Mapped[uuid.UUID] = mapped_column(
         Uuid(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), index=True
     )
-    title: Mapped[str | None] = mapped_column(String(300))
+    title: Mapped[str | None] = mapped_column(Unicode(300))
     patient_id: Mapped[uuid.UUID | None] = mapped_column(
         Uuid(as_uuid=True), ForeignKey("patients.id", ondelete="SET NULL")
     )
@@ -53,7 +53,7 @@ class ChatMessage(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     role: Mapped[ChatRole] = mapped_column(
         Enum(ChatRole, native_enum=False, length=32, validate_strings=True), nullable=False
     )
-    content: Mapped[str] = mapped_column(Text, nullable=False)
+    content: Mapped[str] = mapped_column(UnicodeText, nullable=False)
     citations: Mapped[list[dict[str, Any]]] = mapped_column(JSONType, default=list, nullable=False)
     retrieval_trace: Mapped[dict[str, Any]] = mapped_column(JSONType, default=dict, nullable=False)
     prompt_tokens: Mapped[int | None] = mapped_column(Integer)

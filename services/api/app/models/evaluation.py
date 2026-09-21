@@ -10,7 +10,7 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import DateTime, Float, ForeignKey, Index, Integer, String, Text
+from sqlalchemy import DateTime, Float, ForeignKey, Index, Integer, String, UnicodeText
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.types import Uuid
 
@@ -22,8 +22,8 @@ class EvaluationCase(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     __table_args__ = (Index("ix_evaluation_cases_dataset_category", "dataset_version", "category"),)
 
     dataset_version: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
-    question: Mapped[str] = mapped_column(Text, nullable=False)
-    expected_answer: Mapped[str | None] = mapped_column(Text)
+    question: Mapped[str] = mapped_column(UnicodeText, nullable=False)
+    expected_answer: Mapped[str | None] = mapped_column(UnicodeText)
     # Key facts an answer must contain - graded independently of wording.
     expected_facts: Mapped[list[str]] = mapped_column(JSONType, default=list, nullable=False)
     expected_sources: Mapped[list[dict[str, Any]]] = mapped_column(
@@ -64,13 +64,13 @@ class EvaluationResult(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     case_id: Mapped[uuid.UUID] = mapped_column(
         Uuid(as_uuid=True), ForeignKey("evaluation_cases.id", ondelete="CASCADE")
     )
-    answer: Mapped[str | None] = mapped_column(Text)
+    answer: Mapped[str | None] = mapped_column(UnicodeText)
     retrieved_sources: Mapped[list[dict[str, Any]]] = mapped_column(
         JSONType, default=list, nullable=False
     )
     scores: Mapped[dict[str, Any]] = mapped_column(JSONType, default=dict, nullable=False)
     latency_ms: Mapped[int | None] = mapped_column(Integer)
     estimated_cost_usd: Mapped[float | None] = mapped_column(Float)
-    error: Mapped[str | None] = mapped_column(Text)
+    error: Mapped[str | None] = mapped_column(UnicodeText)
 
     run: Mapped[EvaluationRun] = relationship(back_populates="results")

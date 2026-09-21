@@ -1,11 +1,11 @@
 """Test fixtures.
 
-The suite runs against in-memory SQLite rather than Postgres so `pytest` needs
-no running container and stays fast enough to sit in a pre-commit loop. The
-schema is built from the same `Base.metadata` the migrations are generated
-from; migrations themselves are exercised separately against real Postgres
+The suite runs against in-memory SQLite rather than SQL Server so `pytest`
+needs no running container and stays fast enough to sit in a pre-commit loop.
+The schema is built from the same `Base.metadata` the migrations are generated
+from; migrations themselves are exercised separately against real SQL Server
 (`docker compose run --rm api alembic upgrade head`), because SQLite cannot
-represent JSONB or the read-only role.
+represent NVARCHAR(max), UNIQUEIDENTIFIER or the read-only login.
 """
 
 from __future__ import annotations

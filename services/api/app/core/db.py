@@ -30,7 +30,7 @@ def create_engine(settings: Settings) -> AsyncEngine:
     url = make_url(settings.database_url)
     kwargs: dict[str, Any] = {
         "echo": settings.database_echo,
-        "pool_pre_ping": True,  # survive Postgres restarts / idle connection drops
+        "pool_pre_ping": True,  # survive server restarts / idle connection drops
         "future": True,
     }
     if url.get_backend_name() == "sqlite":

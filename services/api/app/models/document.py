@@ -19,7 +19,8 @@ from sqlalchemy import (
     Index,
     Integer,
     String,
-    Text,
+    Unicode,
+    UnicodeText,
     UniqueConstraint,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -39,12 +40,12 @@ class Document(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     patient_id: Mapped[uuid.UUID | None] = mapped_column(
         Uuid(as_uuid=True), ForeignKey("patients.id", ondelete="CASCADE"), index=True
     )
-    filename: Mapped[str] = mapped_column(String(512), nullable=False)
+    filename: Mapped[str] = mapped_column(Unicode(512), nullable=False)
     content_type: Mapped[str] = mapped_column(String(128), nullable=False)
     size_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
     # Deduplicates re-uploads and pins the exact bytes an answer was grounded in.
     checksum_sha256: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
-    document_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    document_type: Mapped[str] = mapped_column(Unicode(64), nullable=False)
     blob_uri: Mapped[str | None] = mapped_column(String(1024))
     access_level: Mapped[AccessLevel] = mapped_column(
         Enum(AccessLevel, native_enum=False, length=32, validate_strings=True),
@@ -57,7 +58,7 @@ class Document(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         nullable=False,
         index=True,
     )
-    status_detail: Mapped[str | None] = mapped_column(Text)
+    status_detail: Mapped[str | None] = mapped_column(UnicodeText)
     page_count: Mapped[int | None] = mapped_column(Integer)
     chunk_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     uploaded_by_id: Mapped[uuid.UUID | None] = mapped_column(
@@ -74,10 +75,10 @@ class Document(UUIDPrimaryKeyMixin, TimestampMixin, Base):
 class DocumentChunk(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     """The unit of retrieval.
 
-    Chunk text is stored here as the system of record; the vector index in
-    Azure AI Search holds a copy keyed by `id`. Keeping the text in Postgres
-    means the index can be rebuilt from scratch without re-running OCR, which
-    is exactly what the chunk-size experiments in section 14 require.
+    Chunk text is stored here as the system of record; the vector index holds
+    a copy keyed by `id`. Keeping the text in the database means the index can
+    be rebuilt from scratch without re-running extraction, which is exactly what
+    the chunk-size experiments in section 14 require.
     """
 
     __tablename__ = "document_chunks"
@@ -98,8 +99,8 @@ class DocumentChunk(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     )
     chunk_index: Mapped[int] = mapped_column(Integer, nullable=False)
     page_number: Mapped[int | None] = mapped_column(Integer)
-    section: Mapped[str | None] = mapped_column(String(512))
-    text: Mapped[str] = mapped_column(Text, nullable=False)
+    section: Mapped[str | None] = mapped_column(Unicode(512))
+    text: Mapped[str] = mapped_column(UnicodeText, nullable=False)
     token_count: Mapped[int | None] = mapped_column(Integer)
     # Points at the vector-index record; null until the chunk is indexed.
     embedding_reference: Mapped[str | None] = mapped_column(String(256), index=True)

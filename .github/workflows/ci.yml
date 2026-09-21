@@ -22,6 +22,12 @@ jobs:
           cache: pip
           cache-dependency-path: services/api/pyproject.toml
 
+      # pyodbc links against unixODBC at import time. The unit suite runs on
+      # SQLite and never opens an ODBC connection, so the driver itself is not
+      # needed here - only the library.
+      - name: Install unixODBC
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends unixodbc
+
       - name: Install
         working-directory: services/api
         run: pip install -e ".[dev]"
@@ -40,62 +46,82 @@ jobs:
         working-directory: services/api
         run: pytest -q
 
-  migrations:
-    name: API — migrations match the models
+  # Everything that needs a real SQL Server runs through the same compose file
+  # developers use, rather than a second stack defined only in CI.
+  stack:
+    name: Stack — SQL Server, migrations, boot
     runs-on: ubuntu-latest
-    services:
-      postgres:
-        image: postgres:16-alpine
-        env:
-          POSTGRES_USER: copilot
-          POSTGRES_PASSWORD: copilot_ci_password
-          POSTGRES_DB: copilot
-        ports: ["5432:5432"]
-        options: >-
-          --health-cmd "pg_isready -U copilot -d copilot"
-          --health-interval 5s --health-timeout 3s --health-retries 10
-    env:
-      APP_ENV: ci
-      DATABASE_URL: postgresql+asyncpg://copilot:copilot_ci_password@localhost:5432/copilot
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-          cache: pip
-          cache-dependency-path: services/api/pyproject.toml
-
-      - name: Install
-        working-directory: services/api
-        run: pip install -e ".[dev]"
+      - name: Boot SQL Server and the API
+        run: |
+          cp .env.example .env
+          docker compose up -d --build mssql redis
+          docker compose up mssql-init
 
       - name: Upgrade, downgrade, upgrade
-        working-directory: services/api
         run: |
-          alembic upgrade head
-          alembic downgrade base
-          alembic upgrade head
+          docker compose run --rm api alembic upgrade head
+          docker compose run --rm api alembic downgrade base
+          docker compose run --rm api alembic upgrade head
 
-      # The unit suite runs on SQLite and cannot see Postgres-specific drift.
-      # This is what keeps the migrations and the ORM metadata honest.
+      # The unit suite runs on SQLite and cannot see SQL Server-specific drift
+      # (NVARCHAR lengths, UNIQUEIDENTIFIER, JSON-as-NVARCHAR(max)).
       - name: No drift between migrations and models
-        working-directory: services/api
-        run: alembic check
+        run: docker compose run --rm api alembic check
 
-      - name: Seed script runs clean
-        working-directory: services/api
-        env:
-          SEED_ADMIN_EMAIL: admin@example.com
-          SEED_ADMIN_PASSWORD: ci-admin-password
-          SEED_CLINICIAN_EMAIL: clinician@example.com
-          SEED_CLINICIAN_PASSWORD: ci-clinician-password
-          SEED_ANALYST_EMAIL: analyst@example.com
-          SEED_ANALYST_PASSWORD: ci-analyst-password
-          BCRYPT_ROUNDS: "4"
+      - name: The agent login cannot write
         run: |
-          python scripts/seed.py
-          python scripts/seed.py # must be idempotent
+          set -e
+          ro_sql() {
+            docker compose exec -T mssql bash -c \
+              "/opt/mssql-tools18/bin/sqlcmd -S localhost -U copilot_readonly \
+               -P 'Local_Dev_ReadOnly_Password_1' -d copilot -C -b -Q \"$1\""
+          }
+          ro_sql "SELECT COUNT(*) FROM users;"
+          if ro_sql "DELETE FROM users;"; then
+            echo "FAIL: the read-only login was able to delete rows"
+            exit 1
+          fi
+          echo "OK: writes are denied to the agent login"
+
+      - name: Seed is idempotent
+        run: |
+          docker compose run --rm api python scripts/seed.py
+          docker compose run --rm api python scripts/seed.py
+
+      - name: API boots and answers
+        run: |
+          docker compose up -d api
+          for attempt in $(seq 1 30); do
+            if curl -fsS http://localhost:8000/health/ready > /dev/null; then
+              echo "API ready after ${attempt} attempt(s)"
+              break
+            fi
+            if [ "$attempt" -eq 30 ]; then
+              echo "API never became ready"
+              docker compose logs api
+              exit 1
+            fi
+            sleep 3
+          done
+
+      - name: Authenticated round trip
+        run: |
+          TOKEN=$(curl -fsS -X POST http://localhost:8000/api/v1/auth/login \
+            -H 'Content-Type: application/json' \
+            -d '{"email":"clinician@example.com","password":"Clinician123!local"}' \
+            | python -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
+          curl -fsS http://localhost:8000/api/v1/auth/me -H "Authorization: Bearer $TOKEN"
+          # A clinician must not reach an admin-only endpoint.
+          code=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+            http://localhost:8000/api/v1/evaluations/run -H "Authorization: Bearer $TOKEN")
+          test "$code" = "403" || { echo "expected 403, got $code"; exit 1; }
+
+      - name: Dump logs on failure
+        if: failure()
+        run: docker compose logs
 
   web:
     name: Web — lint, types, build
@@ -116,44 +142,3 @@ jobs:
       - run: npx tsc --noEmit
       - run: npx eslint .
       - run: npm run build
-
-  compose:
-    name: Stack — boots and answers
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Boot the stack
-        run: |
-          cp .env.example .env
-          docker compose up -d --build postgres redis api
-
-      - name: Wait for readiness
-        run: |
-          for attempt in $(seq 1 30); do
-            if curl -fsS http://localhost:8000/health/ready > /dev/null; then
-              echo "API ready after ${attempt} attempt(s)"
-              exit 0
-            fi
-            sleep 3
-          done
-          echo "API never became ready"
-          docker compose logs api
-          exit 1
-
-      - name: Seed and check an authenticated round trip
-        run: |
-          docker compose run --rm api python scripts/seed.py
-          TOKEN=$(curl -fsS -X POST http://localhost:8000/api/v1/auth/login \
-            -H 'Content-Type: application/json' \
-            -d '{"email":"clinician@example.com","password":"Clinician123!local"}' \
-            | python -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
-          curl -fsS http://localhost:8000/api/v1/auth/me -H "Authorization: Bearer $TOKEN"
-          # A clinician must not reach an admin-only endpoint.
-          code=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
-            http://localhost:8000/api/v1/evaluations/run -H "Authorization: Bearer $TOKEN")
-          test "$code" = "403" || { echo "expected 403, got $code"; exit 1; }
-
-      - name: Dump logs on failure
-        if: failure()
-        run: docker compose logs

@@ -24,7 +24,7 @@ out/
 .env.*.local
 !.env.example
 
-# Local runtime data
+# Local runtime data (uploaded documents, model cache, sqlite scratch)
 .data/
 storage/
 *.db

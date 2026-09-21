@@ -9,7 +9,10 @@ dependencies = [
     "pydantic[email]>=2.9.0",
     "pydantic-settings>=2.6.0",
     "sqlalchemy[asyncio]>=2.0.36",
-    "asyncpg>=0.30.0",
+    # SQL Server over async ODBC. pyodbc ships manylinux wheels, so the
+    # image only needs the unixODBC runtime plus Microsoft's driver.
+    "aioodbc>=0.5.0",
+    "pyodbc>=5.2.0",
     "alembic>=1.14.0",
     "pyjwt>=2.9.0",
     "bcrypt>=4.2.0",

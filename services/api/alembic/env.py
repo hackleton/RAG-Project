@@ -27,12 +27,46 @@ config.set_main_option("sqlalchemy.url", settings.database_url)
 target_metadata = Base.metadata
 
 
+# SQL Server reflects a CURRENT_TIMESTAMP default back as "(getdate())", which
+# never string-matches what the metadata renders. Rather than switching server
+# default comparison off wholesale - and losing a real check on every other
+# column - treat the known-equivalent "now" spellings as equal and defer
+# everything else to Alembic's own comparison.
+_NOW_DEFAULTS = frozenset(
+    {"current_timestamp", "getdate()", "sysutcdatetime()", "sysdatetimeoffset()"}
+)
+
+
+def _normalise_default(value: object) -> str:
+    text = str(value if value is not None else "").strip().lower()
+    while text.startswith("(") and text.endswith(")"):
+        text = text[1:-1].strip()
+    return text
+
+
+def _compare_server_default(
+    _context: object,
+    _inspected_column: object,
+    _metadata_column: object,
+    inspected_default: object,
+    _metadata_default: object,
+    rendered_metadata_default: object,
+) -> bool | None:
+    """True = differs, False = same, None = let Alembic decide."""
+    if (
+        _normalise_default(inspected_default) in _NOW_DEFAULTS
+        and _normalise_default(rendered_metadata_default) in _NOW_DEFAULTS
+    ):
+        return False
+    return None
+
+
 def _configure(connection: object) -> None:
     context.configure(
         connection=connection,  # type: ignore[arg-type]
         target_metadata=target_metadata,
-        compare_type=True,  # catch VARCHAR length / numeric precision drift
-        compare_server_default=True,
+        compare_type=True,  # catch NVARCHAR length / numeric precision drift
+        compare_server_default=_compare_server_default,
         render_as_batch=False,
     )
 
