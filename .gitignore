@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+*.egg-info/
+build/
+dist/
+
+# Node
+node_modules/
+.next/
+out/
+*.tsbuildinfo
+
+# Environment / secrets  (see SECURITY: never commit real credentials)
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# Local runtime data
+.data/
+storage/
+*.db
+*.sqlite3
+
+# Evaluation output (reports are regenerated; keep datasets)
+evaluation/reports/*
+!evaluation/reports/.gitkeep
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json

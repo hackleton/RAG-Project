@@ -1,0 +1,13 @@
+# Normalise to LF in the repository. Without this, a Windows checkout writes
+# CRLF into files that are executed inside Linux containers - a CRLF shebang
+# line makes the Postgres init script fail with "no such file or directory".
+* text=auto eol=lf
+
+*.sh      text eol=lf
+*.py      text eol=lf
+Dockerfile text eol=lf
+
+*.png     binary
+*.jpg     binary
+*.pdf     binary
+*.docx    binary

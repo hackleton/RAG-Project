@@ -1,0 +1,42 @@
+@import "tailwindcss";
+
+/* Design tokens. Light is the default; the dark values are applied when the
+   viewer's OS asks for it, so the app follows the system rather than shipping
+   a toggle nobody asked for. */
+@theme {
+  --color-surface: #ffffff;
+  --color-surface-muted: #f6f7f9;
+  --color-border: #e3e6ea;
+  --color-ink: #16191d;
+  --color-ink-muted: #5c646e;
+  --color-accent: #1f6feb;
+  --color-accent-ink: #ffffff;
+  --color-danger: #b42318;
+  --color-ok: #067647;
+}
+
+@media (prefers-color-scheme: dark) {
+  @theme {
+    --color-surface: #14171a;
+    --color-surface-muted: #1c2024;
+    --color-border: #2a2f35;
+    --color-ink: #eceef1;
+    --color-ink-muted: #9aa3ad;
+    --color-accent: #4c8dff;
+    --color-accent-ink: #0b1220;
+    --color-danger: #ff6b5e;
+    --color-ok: #4ade80;
+  }
+}
+
+html,
+body {
+  background: var(--color-surface);
+  color: var(--color-ink);
+}
+
+body {
+  font-family:
+    ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
