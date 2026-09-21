@@ -1,0 +1,52 @@
+CLINICAL PROGRESS NOTE
+
+PATIENT: Synthetic Patient 0003 (SYN-0003)
+DATE OF SERVICE: 2026-06-01
+SEX: Female    YEAR OF BIRTH: 1985
+
+CHIEF COMPLAINT
+
+Routine follow-up for type 2 diabetes mellitus.
+
+HISTORY OF PRESENT ILLNESS
+
+The patient returns for scheduled review. Since the last visit they report
+adherence to the prescribed regimen with no missed doses. They describe
+intermittent fatigue in the late afternoon but no chest pain, shortness of
+breath, visual change or peripheral oedema. Home monitoring has been performed
+roughly three times per week.
+
+PAST MEDICAL HISTORY
+
+Type 2 diabetes mellitus (ICD-10 E11.9), diagnosed 2016.
+
+CURRENT MEDICATIONS
+
+- Metformin 1000 mg twice daily
+- Cholecalciferol 1000 IU once daily
+
+ALLERGIES
+
+No known drug allergies.
+
+VITAL SIGNS
+
+Blood pressure 125/95 mmHg. Heart rate 66 bpm.
+Temperature 36.6 C. Weight 102 kg.
+
+LABORATORY RESULTS
+
+Haemoglobin A1c 8.0% (reference 4.0-5.6%).
+Fasting glucose 120 mg/dL (reference 70-99 mg/dL).
+Creatinine 1.05 mg/dL (reference 0.6-1.3 mg/dL).
+
+ASSESSMENT AND PLAN
+
+Type 2 diabetes mellitus remains suboptimally controlled on
+the current regimen. Continue existing therapy. Reinforce dietary and activity
+counselling. Repeat laboratory panel in three months and review at the next
+scheduled appointment.
+
+FOLLOW-UP
+
+Return in 12 weeks, or sooner if symptoms change.

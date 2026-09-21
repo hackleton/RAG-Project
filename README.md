@@ -21,8 +21,8 @@ swapped in later as adapters rather than a rewrite — see
 | Sprint | Focus | State |
 | --- | --- | --- |
 | 1 | Foundation — repo, Docker, FastAPI, Next.js, SQL Server, auth, health | **Done** |
-| 2 | Document pipeline — upload, extraction, chunking, metadata | Next |
-| 3 | Search + RAG — embeddings, hybrid retrieval, reranking, citations | Planned |
+| 2 | Document pipeline — upload, extraction, chunking, metadata | **Done** |
+| 3 | Search + RAG — embeddings, hybrid retrieval, reranking, citations | Next |
 | 4 | Agentic AI — router, RAG tool, SQL tool, synthesis | Planned |
 | 5 | Evaluation — dataset, retrieval + generation metrics, regression runs | Planned |
 | 6 | Security — RBAC depth, metadata filters, SQL restrictions, injection tests | Planned |
@@ -52,6 +52,12 @@ behaviour exists.
   every error envelope.
 - **Frontend**: login, session gate, and a dashboard showing the caller's role,
   resolved patient scope, and live API health.
+- **Document pipeline**: upload → local storage → extraction (PDF/DOCX/TXT/MD)
+  → normalisation → section-aware chunking → chunks with full provenance.
+  Deduplicated on content checksum, so re-ingesting is idempotent.
+- **Synthetic corpus**: 18 generated documents across 3 patients — clinical
+  notes, lab reports and discharge summaries — reproducible from a fixed seed
+  so the Sprint 5 evaluation set can reference specific values.
 
 ## Quick start
 
@@ -62,7 +68,13 @@ SQL Server container alone asks for 2GB. Nothing else needs installing.
 cp .env.example .env
 docker compose up -d --build
 docker compose run --rm api python scripts/seed.py
+docker compose run --rm api python scripts/generate_synthetic_documents.py
+docker compose run --rm api python scripts/ingest_corpus.py
 ```
+
+The last two commands generate the synthetic corpus and ingest it through the
+same service path an operator upload takes — same validation, deduplication,
+access control and audit trail.
 
 | Service | URL |
 | --- | --- |
@@ -95,6 +107,13 @@ docker compose run --rm api alembic check
 docker compose exec web sh -c "npx tsc --noEmit && npx eslint ."
 ```
 
+Re-chunk the corpus after changing `CHUNK_TARGET_TOKENS` or
+`CHUNK_OVERLAP_TOKENS` — this is the loop the chunk-size experiments run:
+
+```bash
+docker compose run --rm api python scripts/ingest_corpus.py --reset
+```
+
 Open a SQL prompt as the restricted agent login (writes should be refused):
 
 ```bash
@@ -120,6 +139,7 @@ docker compose exec mssql bash -c "/opt/mssql-tools18/bin/sqlcmd -S localhost -U
       Vector index          SQL Server  (SELECT-only login for the SQL tool)
            |
    Extraction -> local file storage -> chunks + metadata -> embeddings
+              (pypdf / python-docx / plain text; no OCR in v1)
 ```
 
 Local components and what they stand in for:
@@ -147,7 +167,8 @@ services/api/           FastAPI service
   app/security/         principal, RBAC predicates, audit writer
   app/api/              routers, dependencies, middleware
   app/providers/        storage, extraction, embedding, LLM adapters
-  app/{rag,documents,agents,tools,evaluation}/   later sprints
+  app/documents/        normalisation, section detection, chunking, pipeline
+  app/{rag,agents,tools,evaluation}/             later sprints
   alembic/              migrations
   tests/                pytest suite
 infrastructure/docker/  SQL Server bootstrap (database, logins, DENYs)

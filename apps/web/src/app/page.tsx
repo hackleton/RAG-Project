@@ -9,8 +9,8 @@ import { clearToken } from "@/lib/session";
 
 const ROADMAP = [
   { sprint: "Sprint 1", title: "Foundation", state: "done" },
-  { sprint: "Sprint 2", title: "Document pipeline", state: "next" },
-  { sprint: "Sprint 3", title: "Hybrid retrieval and citations", state: "planned" },
+  { sprint: "Sprint 2", title: "Document pipeline", state: "done" },
+  { sprint: "Sprint 3", title: "Hybrid retrieval and citations", state: "next" },
   { sprint: "Sprint 4", title: "Agentic workflow", state: "planned" },
   { sprint: "Sprint 5", title: "Evaluation harness", state: "planned" },
   { sprint: "Sprint 6", title: "Security hardening", state: "planned" },

@@ -1,0 +1,52 @@
+CLINICAL PROGRESS NOTE
+
+PATIENT: Synthetic Patient 0002 (SYN-0002)
+DATE OF SERVICE: 2025-12-03
+SEX: Male    YEAR OF BIRTH: 1972
+
+CHIEF COMPLAINT
+
+Routine follow-up for hyperlipidaemia.
+
+HISTORY OF PRESENT ILLNESS
+
+The patient returns for scheduled review. Since the last visit they report
+adherence to the prescribed regimen with no missed doses. They describe
+intermittent fatigue in the late afternoon but no chest pain, shortness of
+breath, visual change or peripheral oedema. Home monitoring has been performed
+roughly three times per week.
+
+PAST MEDICAL HISTORY
+
+Hyperlipidaemia (ICD-10 E78.5), diagnosed 2020.
+
+CURRENT MEDICATIONS
+
+- Atorvastatin 20 mg at night
+- Cholecalciferol 1000 IU once daily
+
+ALLERGIES
+
+No known drug allergies.
+
+VITAL SIGNS
+
+Blood pressure 125/98 mmHg. Heart rate 79 bpm.
+Temperature 36.4 C. Weight 66 kg.
+
+LABORATORY RESULTS
+
+Haemoglobin A1c 8.7% (reference 4.0-5.6%).
+Fasting glucose 153 mg/dL (reference 70-99 mg/dL).
+Creatinine 1.61 mg/dL (reference 0.6-1.3 mg/dL).
+
+ASSESSMENT AND PLAN
+
+Hyperlipidaemia remains suboptimally controlled on
+the current regimen. Continue existing therapy. Reinforce dietary and activity
+counselling. Repeat laboratory panel in three months and review at the next
+scheduled appointment.
+
+FOLLOW-UP
+
+Return in 12 weeks, or sooner if symptoms change.

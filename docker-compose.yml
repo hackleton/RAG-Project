@@ -67,11 +67,15 @@ services:
       READONLY_DATABASE_URL: mssql+aioodbc://${MSSQL_READONLY_USER:-copilot_readonly}:${MSSQL_READONLY_PASSWORD}@mssql:1433/${MSSQL_DB:-copilot}?driver=ODBC+Driver+18+for+SQL+Server&TrustServerCertificate=yes
       REDIS_URL: redis://redis:6379/0
       STORAGE_DIR: /srv/.data/storage
+      # Where scripts/generate_synthetic_documents.py writes the corpus.
+      CORPUS_DIR: /evaluation/datasets/documents
     ports:
       - "${API_PORT:-8000}:8000"
     volumes:
       - ./services/api:/srv
       - api_storage:/srv/.data
+      # The generated corpus and evaluation datasets belong in the repo.
+      - ./evaluation:/evaluation
     depends_on:
       mssql: { condition: service_healthy }
       mssql-init: { condition: service_completed_successfully }

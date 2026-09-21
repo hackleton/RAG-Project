@@ -30,7 +30,7 @@ RUN --mount=type=cache,target=/root/.cache/pip \
         "pydantic-settings>=2.6.0" "sqlalchemy[asyncio]>=2.0.36" \
         "aioodbc>=0.5.0" "pyodbc>=5.2.0" \
         "alembic>=1.14.0" "pyjwt>=2.9.0" "bcrypt>=4.2.0" "python-multipart>=0.0.12" \
-        "structlog>=24.4.0" "redis>=5.2.0"
+        "structlog>=24.4.0" "redis>=5.2.0" "pypdf>=5.1.0" "python-docx>=1.1.2"
 
 FROM base AS dev
 RUN --mount=type=cache,target=/root/.cache/pip \

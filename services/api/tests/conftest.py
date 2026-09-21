@@ -32,7 +32,7 @@ ANALYST_PASSWORD = "analyst-password"
 
 
 @pytest.fixture(scope="session")
-def settings() -> Settings:
+def settings(tmp_path_factory: pytest.TempPathFactory) -> Settings:
     return Settings(
         app_env=AppEnv.CI,
         database_url="sqlite+aiosqlite:///:memory:",
@@ -40,6 +40,11 @@ def settings() -> Settings:
         log_level="WARNING",
         log_format="console",
         bcrypt_rounds=TEST_BCRYPT_ROUNDS,
+        # Uploads land in a throwaway directory, never in the repo or the
+        # container's real storage volume.
+        storage_dir=tmp_path_factory.mktemp("storage"),
+        # Keeps the over-the-limit test from allocating the production ceiling.
+        max_upload_mb=1,
     )
 
 

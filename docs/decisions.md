@@ -249,3 +249,70 @@ defers everything else to Alembic.
 `compare_server_default=False`, but that switches the check off for every column
 in the schema, including ones where a changed default would be a real bug.
 Narrowing it keeps the check that CI depends on.
+
+---
+
+## 14. No OCR in v1; a scanned PDF fails loudly
+
+**Decision.** PDF extraction is `pypdf`'s text layer only. A PDF with no text
+layer raises, and the document lands in `FAILED` with "most likely a scan".
+
+**Why.** The alternative is worse than not supporting it: a scan extracts as an
+empty string, which would sail through the pipeline and produce a document with
+zero chunks that silently never appears in any answer. A loud failure is a
+smaller problem than a document that looks ingested and is not.
+
+`pypdf` over PyMuPDF because PyMuPDF is AGPL and this is a portfolio repository;
+over `pdfplumber` because the extra layout data it gives - word coordinates,
+font sizes - is only worth carrying once there is something that consumes it.
+What is given up relative to Azure Document Intelligence is table structure,
+multi-column reading order and OCR.
+
+**Revisit if.** The corpus gains scanned documents, at which point Tesseract
+behind the same `DocumentExtractor` protocol is the local answer.
+
+---
+
+## 15. Ingestion runs inline, not on a queue
+
+**Decision.** `POST /documents/upload` awaits the pipeline and returns `201`
+with the finished document.
+
+**Why.** The work is local and the documents are kilobytes, so the request
+completes in well under a second. Inline keeps the whole pipeline inside one
+trace and one transaction: a failed extraction rolls the row back rather than
+leaving a dangling `UPLOADED` record that nothing will ever advance. It also
+means the API tests assert the real outcome instead of polling for a status.
+
+**Cost.** A large or slow document would hold the connection, and there is no
+retry. `DocumentPipeline` is a standalone object taking a session and bytes, so
+Sprint 7 moving it behind a worker is enqueuing instead of awaiting - the
+`EXTRACTING`/`CHUNKING`/`INDEXING` statuses it already writes exist for exactly
+that.
+
+**Revisit if.** OCR arrives (seconds per page, not milliseconds) or uploads stop
+being single small files.
+
+---
+
+## 16. Section boundaries outrank chunk size
+
+**Decision.** A chunk never spans two sections, even when that leaves it far
+below the target size. On the synthetic clinical notes this produces ten chunks
+per note, several of them under 20 tokens ("No known drug allergies.").
+
+**Why.** In a clinical note the section *is* the semantic unit. A chunk that
+straddles MEDICATIONS and ALLERGIES answers neither question cleanly and cites a
+section it is only half from. A 5-token chunk that exactly answers "does this
+patient have any allergies?" is a better retrieval unit than a 500-token chunk
+that happens to contain the answer.
+
+**Cost.** More chunks, each with less surrounding context, and an index where
+chunk length varies by two orders of magnitude - which can skew BM25 length
+normalisation.
+
+**Revisit if.** The Sprint 5 evaluation shows it hurting. This is a stated
+hypothesis, not a settled fact, and it is precisely the kind of thing the
+experiments in plan section 14 exist to decide: the comparison to run is
+section-strict chunking against one that merges adjacent short sections up to
+the target size.

@@ -1,8 +1,10 @@
 """Role and scope enforcement.
 
-Sprint 1 endpoints beyond auth are not implemented yet, which is exactly what
-makes them useful here: a 501 means authorisation passed and the handler was
-reached, a 403 means it did not. That distinction is the assertion.
+These tests assert only that the authorisation layer let the request through or
+did not - never what the handler then did. For an endpoint whose behaviour is
+still ahead of us, a 501 makes that distinction cleanly: it means the role check
+passed and the handler ran. For one that is implemented, its own test module
+covers the behaviour and the check here stays about access.
 """
 
 from __future__ import annotations
@@ -65,10 +67,13 @@ async def test_upload_admits_a_clinician(
     response = await client.post(
         f"{api}/documents/upload",
         headers=auth(clinician_token),
-        files={"file": ("note.txt", b"synthetic content", "text/plain")},
+        files={"file": ("note.txt", b"HISTORY\n\nSynthetic clinical content.\n", "text/plain")},
+        data={"access_level": "internal"},
     )
 
-    assert response.status_code == 501
+    # Implemented in Sprint 2; the ingestion behaviour itself is covered in
+    # tests/test_documents.py. Here it only has to prove the role check passed.
+    assert response.status_code == 201
 
 
 async def test_protected_endpoints_reject_anonymous_callers(client: AsyncClient, api: str) -> None:

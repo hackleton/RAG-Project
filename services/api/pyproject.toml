@@ -18,6 +18,10 @@ dependencies = [
     "bcrypt>=4.2.0",
     "python-multipart>=0.0.12",
     "structlog>=24.4.0",
+    # Document extraction. Both are pure Python with permissive licences -
+    # PyMuPDF would give richer layout but is AGPL.
+    "pypdf>=5.1.0",
+    "python-docx>=1.1.2",
     "redis>=5.2.0",
 ]
 

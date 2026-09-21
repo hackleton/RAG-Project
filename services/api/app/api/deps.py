@@ -21,8 +21,12 @@ from app.core.db import get_db_session
 from app.core.errors import AuthenticationError
 from app.core.logging import user_id_ctx
 from app.core.security import decode_access_token
+from app.documents.chunking import ChunkingConfig
+from app.documents.pipeline import DocumentPipeline
+from app.documents.service import DocumentService
 from app.models.enums import Role
 from app.models.user import PatientAccessGrant, User
+from app.providers.storage import LocalFileStore
 from app.security.principal import Principal
 from app.security.rbac import assert_role
 
@@ -103,6 +107,26 @@ def _as_uuid(value: str) -> uuid.UUID:
         return uuid.UUID(value)
     except ValueError as exc:
         raise AuthenticationError("Malformed token subject.") from exc
+
+
+def get_document_service(settings: SettingsDep) -> DocumentService:
+    """Wire the document pipeline from settings.
+
+    Built per request rather than as a module-level singleton so an app
+    constructed with different settings - the test suite, or a future
+    experiment run sweeping chunk sizes - gets its own configuration. The
+    objects are cheap; nothing here opens a connection or loads a model.
+    """
+    return DocumentService(
+        store=LocalFileStore(settings.storage_dir),
+        pipeline=DocumentPipeline(
+            chunking=ChunkingConfig(
+                target_tokens=settings.chunk_target_tokens,
+                overlap_tokens=settings.chunk_overlap_tokens,
+            )
+        ),
+        max_upload_bytes=settings.max_upload_bytes,
+    )
 
 
 def client_ip(request: Request) -> str | None:

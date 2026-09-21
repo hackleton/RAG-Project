@@ -1,0 +1,22 @@
+LABORATORY REPORT
+
+PATIENT: Synthetic Patient 0001 (SYN-0001)
+COLLECTED: 2026-01-27 00:00 UTC
+SPECIMEN: Venous blood
+ORDERING CLINICIAN: Synthetic Clinician
+
+RESULTS
+
+Test | Result | Units | Reference Range
+Hemoglobin A1c | 5.5 | % | 4.0-5.6
+Fasting Glucose | 118 | mg/dL | 70-99
+Creatinine | 0.96 | mg/dL | 0.6-1.3
+LDL Cholesterol | 168 | mg/dL | 0-100
+Sodium | 134 | mmol/L | 135-145
+Potassium | 3.7 | mmol/L | 3.5-5.1
+
+COMMENTS
+
+Results reviewed and released by the laboratory information system. Values
+outside the reference range should be interpreted in the clinical context of
+this patient. This is synthetic data generated for engineering purposes.

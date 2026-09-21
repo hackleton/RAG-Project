@@ -1,0 +1,52 @@
+CLINICAL PROGRESS NOTE
+
+PATIENT: Synthetic Patient 0001 (SYN-0001)
+DATE OF SERVICE: 2025-12-03
+SEX: Female    YEAR OF BIRTH: 1958
+
+CHIEF COMPLAINT
+
+Routine follow-up for essential hypertension.
+
+HISTORY OF PRESENT ILLNESS
+
+The patient returns for scheduled review. Since the last visit they report
+adherence to the prescribed regimen with no missed doses. They describe
+intermittent fatigue in the late afternoon but no chest pain, shortness of
+breath, visual change or peripheral oedema. Home monitoring has been performed
+roughly three times per week.
+
+PAST MEDICAL HISTORY
+
+Essential hypertension (ICD-10 I10), diagnosed 2019.
+
+CURRENT MEDICATIONS
+
+- Lisinopril 10 mg once daily
+- Cholecalciferol 1000 IU once daily
+
+ALLERGIES
+
+No known drug allergies.
+
+VITAL SIGNS
+
+Blood pressure 142/77 mmHg. Heart rate 77 bpm.
+Temperature 36.4 C. Weight 83 kg.
+
+LABORATORY RESULTS
+
+Haemoglobin A1c 6.5% (reference 4.0-5.6%).
+Fasting glucose 159 mg/dL (reference 70-99 mg/dL).
+Creatinine 1.08 mg/dL (reference 0.6-1.3 mg/dL).
+
+ASSESSMENT AND PLAN
+
+Essential hypertension remains adequately controlled on
+the current regimen. Continue existing therapy. Reinforce dietary and activity
+counselling. Repeat laboratory panel in three months and review at the next
+scheduled appointment.
+
+FOLLOW-UP
+
+Return in 12 weeks, or sooner if symptoms change.
