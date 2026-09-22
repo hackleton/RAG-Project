@@ -40,12 +40,16 @@ DOCUMENT_TYPES = {
     "note": "clinical_note",
     "labs": "lab_report",
     "discharge": "discharge_summary",
+    "guideline": "clinical_guideline",
+    "reference": "drug_reference",
 }
 
 
 def document_type_for(path: Path) -> str:
     for marker, document_type in DOCUMENT_TYPES.items():
-        if f"_{marker}_" in path.name:
+        # Patient documents carry the marker in the middle (`SYN-0001_note_...`);
+        # reference material carries it as a prefix (`guideline_...`).
+        if f"_{marker}_" in path.name or path.name.startswith(f"{marker}_"):
             return document_type
     return "clinical_note"
 

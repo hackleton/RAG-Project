@@ -16,7 +16,12 @@ from app import __version__
 from app.api.middleware import RequestContextMiddleware
 from app.api.router import api_router, root_router
 from app.core.config import Settings, get_settings
-from app.core.db import dispose_engine, init_engine
+from app.core.db import (
+    dispose_engine,
+    dispose_readonly_engine,
+    init_engine,
+    init_readonly_engine,
+)
 from app.core.errors import register_exception_handlers
 from app.core.logging import configure_logging, get_logger
 from app.providers.embedding import build_embedding_provider
@@ -45,6 +50,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(application: FastAPI) -> AsyncIterator[None]:
         init_engine(settings)
+        # The agent's SQL tool connects as an unprivileged login. Built at
+        # start-up so a misconfigured read-only URL fails the boot rather than
+        # the first analytical question somebody asks.
+        init_readonly_engine(settings)
 
         # Built once per process. The embedding model and reranker load their
         # weights lazily on first use, so start-up stays fast and a missing
@@ -62,11 +71,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             embedding_provider=settings.embedding_provider.value,
             llm_provider=settings.llm_provider.value,
             retrieval_mode=settings.retrieval_mode,
+            planner=settings.effective_planner.value,
+            sql_tool_enabled=settings.sql_tool_enabled,
         )
         try:
             yield
         finally:
             await application.state.vector_store.close()
+            await dispose_readonly_engine()
             await dispose_engine()
             logger.info("api_shutdown")
 

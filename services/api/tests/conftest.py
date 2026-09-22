@@ -12,17 +12,22 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import AsyncIterator
+from typing import Any, cast
 
 import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.agents.factory import build_registry
+from app.agents.registry import ToolRegistry
 from app.core import db as db_module
 from app.core.config import AppEnv, EmbeddingProviderName, Settings
 from app.core.config import LLMProvider as LLMProviderName
 from app.core.security import hash_password
 from app.main import create_app
 from app.models import Base, Patient, PatientAccessGrant, Role, User
+from app.rag.retriever import HybridRetriever, RetrievalConfig
+from app.security.principal import Principal
 
 # bcrypt at the production cost would add ~0.25s to every login test.
 TEST_BCRYPT_ROUNDS = 4
@@ -54,6 +59,14 @@ def settings(tmp_path_factory: pytest.TempPathFactory) -> Settings:
         embedding_provider=EmbeddingProviderName.HASH,
         embedding_dimensions=64,
         llm_provider=LLMProviderName.ECHO,
+        # On by default here although it is off by default in a deployment:
+        # the guard is the part of the agent most worth testing, and a test
+        # suite that leaves it switched off tests nothing about it.
+        sql_tool_enabled=True,
+        # No separate read-only login exists on SQLite, so the SQL tool runs
+        # on the application engine. The in-process guard is unaffected, and
+        # `Settings.validate_production_safety` refuses this outside local/CI.
+        readonly_database_url=None,
     )
 
 
@@ -162,6 +175,41 @@ async def clinician_token(client: AsyncClient, api: str, users: dict[str, User])
 @pytest.fixture
 async def analyst_token(client: AsyncClient, api: str, users: dict[str, User]) -> str:
     return await login(client, api, users["analyst"].email, ANALYST_PASSWORD)
+
+
+@pytest.fixture
+def registry(app: object) -> ToolRegistry:
+    """The tool registry, wired exactly as the API wires it.
+
+    Lets a test call `dispatch` directly with a hostile `ToolCall` - which is
+    the only way to exercise the gate against a call no planner would make.
+    """
+    application = cast(Any, app)
+    config = RetrievalConfig()
+    return build_registry(
+        settings=application.state.settings,
+        retriever=HybridRetriever(
+            store=application.state.vector_store,
+            embedder=application.state.embedder,
+            reranker=application.state.reranker,
+            config=config,
+        ),
+        config=config,
+        llm=application.state.llm,
+    )
+
+
+def principal_for(user: User, patients: list[Patient] | None = None) -> Principal:
+    """A `Principal` matching a fixture user, for direct service-level calls."""
+    return Principal(
+        id=user.id,
+        email=user.email,
+        name=user.name,
+        role=user.role,
+        accessible_patient_ids=(
+            None if user.role is Role.ADMIN else frozenset(p.id for p in patients or [])
+        ),
+    )
 
 
 def auth(token: str) -> dict[str, str]:

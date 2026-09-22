@@ -190,6 +190,112 @@ Community clinic review within 14 days of discharge.
 """
 
 
+# Reference material: belongs to no patient, so it is what `search_knowledge`
+# searches and what an analyst - who holds no patient grants - can still reach.
+# Without documents like these the knowledge tool would always return nothing,
+# and "the tool works" would be indistinguishable from "the corpus is empty".
+KNOWLEDGE_DOCUMENTS: tuple[tuple[str, str], ...] = (
+    (
+        "guideline_glycaemic_control.md",
+        """Glycaemic Control Guideline
+
+Scope:
+
+Synthetic guidance for the management of type 2 diabetes mellitus in adults.
+This document is generated reference material for an engineering project and
+is not clinical guidance.
+
+Target Ranges:
+
+Haemoglobin A1c below 7.0% is the usual target for most non-pregnant adults.
+A less stringent target of 7.5-8.0% may be appropriate where there is a
+history of severe hypoglycaemia or limited life expectancy.
+Fasting plasma glucose 80-130 mg/dL.
+
+First-Line Therapy:
+
+Metformin remains first-line pharmacological therapy unless contraindicated.
+Gradual dose titration reduces gastrointestinal intolerance.
+
+Monitoring:
+
+Repeat HbA1c every three months until the target is met, then every six
+months. Review renal function at least annually.
+
+Escalation:
+
+Where HbA1c remains above target after three months of maximally tolerated
+first-line therapy, review adherence before adding a second agent.
+""",
+    ),
+    (
+        "guideline_blood_pressure.md",
+        """Blood Pressure Management Guideline
+
+Scope:
+
+Synthetic guidance for adults with essential hypertension. Generated
+reference material; not clinical guidance.
+
+Thresholds:
+
+Normal blood pressure is below 120/80 mmHg. Stage 1 hypertension is 130-139
+systolic or 80-89 diastolic. Stage 2 hypertension is 140/90 mmHg or above.
+
+Targets:
+
+A target below 130/80 mmHg is reasonable for most adults who tolerate it.
+
+Initial Management:
+
+Lifestyle measures apply at every stage: sodium reduction, weight management,
+regular activity and limiting alcohol.
+
+Pharmacological Therapy:
+
+ACE inhibitors, angiotensin receptor blockers, thiazide-type diuretics and
+calcium channel blockers are all accepted first-line choices. Review
+electrolytes and renal function two to four weeks after starting or
+increasing an ACE inhibitor.
+""",
+    ),
+    (
+        "reference_common_medications.md",
+        """Drug Reference: Commonly Prescribed Agents
+
+Scope:
+
+Synthetic drug reference for an engineering project. Not clinical guidance
+and not a substitute for a formulary.
+
+Metformin:
+
+Class: biguanide. Typical adult dose 500-1000 mg twice daily with food.
+Contraindicated in severe renal impairment. Common adverse effects are
+gastrointestinal. Monitor renal function at least annually.
+
+Lisinopril:
+
+Class: ACE inhibitor. Typical adult dose 10-40 mg once daily. Monitor
+potassium and creatinine after initiation and after each dose increase. Dry
+cough is the most common reason for discontinuation.
+
+Atorvastatin:
+
+Class: HMG-CoA reductase inhibitor. Typical adult dose 10-80 mg at night.
+Check a lipid panel 4-12 weeks after starting or changing the dose. Muscle
+symptoms should prompt a creatine kinase measurement.
+
+Sodium Bicarbonate:
+
+Used to manage metabolic acidosis in chronic kidney disease. Typical dose
+650 mg twice daily. Monitor bicarbonate and blood pressure, as the sodium
+load may worsen fluid retention.
+""",
+    ),
+)
+
+
 def generate(output_dir: Path, *, seed: int) -> int:
     rng = random.Random(seed)
     # Anchored, not `now`: the corpus must be byte-identical on every machine.
@@ -223,6 +329,14 @@ def generate(output_dir: Path, *, seed: int) -> int:
             patient_dir / f"{external_id}_discharge_{anchor:%Y%m%d}.md",
             discharge_summary(rng, patient, anchor),
         )
+        written += 1
+
+    # No patient directory: these documents belong to nobody, which is what
+    # makes them reachable by `search_knowledge` and by an analyst.
+    knowledge_dir = output_dir / "knowledge"
+    knowledge_dir.mkdir(parents=True, exist_ok=True)
+    for filename, content in KNOWLEDGE_DOCUMENTS:
+        _write(knowledge_dir / filename, content)
         written += 1
 
     return written

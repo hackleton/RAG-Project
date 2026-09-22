@@ -48,6 +48,19 @@ class EmbeddingProviderName(StrEnum):
     HASH = "hash"
 
 
+class PlannerName(StrEnum):
+    """Which router decides the agent's tool calls."""
+
+    # Deterministic intent rules. No model, so it is reproducible and runs in
+    # CI - and it is the fallback whenever the LLM planner returns nonsense.
+    RULE = "rule"
+    # The model picks tools from the registry's catalogue.
+    LLM = "llm"
+    # LLM when a real model is configured, rules otherwise. The echo provider
+    # cannot route, so "auto" avoids a config that silently does nothing.
+    AUTO = "auto"
+
+
 def _split_csv(value: object) -> object:
     """Accept both `a,b` and `["a","b"]` for list-valued env vars."""
     if isinstance(value, str):
@@ -158,6 +171,20 @@ class Settings(BaseSettings):
     # Discard candidates the reranker scores below this. None = keep all.
     rerank_score_threshold: float | None = None
 
+    # --- Agent ------------------------------------------------------------
+    agent_planner: PlannerName = PlannerName.AUTO
+    # Ceiling on tool calls per run. The router is untrusted input, so the
+    # bound is enforced by the dispatcher rather than requested in the prompt.
+    agent_max_tool_calls: int = 4
+    # Free-form NL-to-SQL. Off by default: it is the one tool whose input is a
+    # generated program, and a deployment should opt into that deliberately.
+    sql_tool_enabled: bool = False
+    # Hard row cap applied by the executor, not by the generated SQL.
+    # The table allow-list is deliberately *not* configuration: it is derived
+    # per role in `app.tools.sql_guard`, because a table that can be added by
+    # environment variable can be added without anyone deciding how to scope it.
+    sql_max_rows: int = 200
+
     # --- Auth ------------------------------------------------------------
     jwt_secret_key: str = DEV_JWT_SECRET
     jwt_algorithm: str = "HS256"
@@ -174,6 +201,24 @@ class Settings(BaseSettings):
     def max_upload_bytes(self) -> int:
         return self.max_upload_mb * 1024 * 1024
 
+    @property
+    def effective_planner(self) -> PlannerName:
+        """Resolve `auto`. The echo provider cannot make routing decisions."""
+        if self.agent_planner is not PlannerName.AUTO:
+            return self.agent_planner
+        return PlannerName.RULE if self.llm_provider is LLMProvider.ECHO else PlannerName.LLM
+
+    @property
+    def sql_session_url(self) -> str:
+        """The URL the SQL tool connects with.
+
+        Falls back to the application login only in local/CI, where there is
+        often no second login to have - SQLite has no roles at all. The
+        application-layer guard still runs, and `validate_production_safety`
+        refuses the fallback anywhere else.
+        """
+        return self.readonly_database_url or self.database_url
+
     @model_validator(mode="after")
     def validate_production_safety(self) -> Settings:
         if self.chunk_overlap_tokens >= self.chunk_target_tokens:
@@ -183,6 +228,23 @@ class Settings(BaseSettings):
 
         if self.is_local:
             return self
+
+        # Outside local/CI the SQL tool must have a genuinely separate login.
+        # The in-process guard rejects everything that is not a scoped SELECT,
+        # but it is one layer; the database privilege is the one that still
+        # holds if the guard has a bug.
+        if self.sql_tool_enabled:
+            if not self.readonly_database_url:
+                raise ValueError(
+                    "READONLY_DATABASE_URL must be set when SQL_TOOL_ENABLED=true "
+                    f"and APP_ENV={self.app_env}."
+                )
+            if self.readonly_database_url == self.database_url:
+                raise ValueError(
+                    "READONLY_DATABASE_URL must not be the application login - "
+                    "it exists so the SQL tool has no write privilege at all."
+                )
+
         if self.jwt_secret_key == DEV_JWT_SECRET:
             raise ValueError(
                 f"JWT_SECRET_KEY must be set to a real secret when APP_ENV={self.app_env}. "

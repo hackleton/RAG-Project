@@ -122,6 +122,61 @@ export interface SearchAnswer {
   trace: RetrievalTrace;
 }
 
+export interface AgentStep {
+  tool: string;
+  arguments: Record<string, unknown>;
+  /** Why the planner chose this tool. Shown, never acted on. */
+  reason: string | null;
+  allowed: boolean;
+  summary: string;
+  /** Stable denial reason, e.g. "role_not_permitted". */
+  denial_code: string | null;
+  duration_ms: number;
+  evidence: number;
+  data: Record<string, unknown>;
+  trace: Record<string, unknown>;
+}
+
+export interface AgentCitation {
+  number: number;
+  source: string;
+  /** "document" or "database" - the two render differently. */
+  kind: string;
+  excerpt: string;
+  chunk_id: string | null;
+  document_id: string | null;
+  section: string | null;
+  page_number: number | null;
+  score: number | null;
+}
+
+export interface AgentTrace {
+  planner: string;
+  available_tools: string[];
+  planned: string[];
+  executed: string[];
+  denied: { tool: string; reason: string | null }[];
+  evidence: number;
+  cited: number;
+  model: string;
+  timings_ms: Record<string, number>;
+}
+
+export interface AgentRun {
+  session_id: string;
+  message_id: string;
+  answer: string;
+  steps: AgentStep[];
+  citations: AgentCitation[];
+  trace: AgentTrace;
+  usage: ChatUsage;
+}
+
+export interface ToolCatalogue {
+  planner: string;
+  tools: { name: string; description: string; arguments: Record<string, unknown> }[];
+}
+
 export interface RetrievalOverrides {
   top_k?: number;
   candidate_pool?: number;
@@ -229,4 +284,18 @@ export const api = {
     },
     signal?: AbortSignal,
   ) => request<SearchAnswer>("/search", { method: "POST", token, body, signal }),
+
+  agentTools: (token: string, signal?: AbortSignal) =>
+    request<ToolCatalogue>("/agents/tools", { token, signal }),
+
+  agentRun: (
+    token: string,
+    body: {
+      question: string;
+      session_id?: string | null;
+      patient_external_id?: string | null;
+      max_tool_calls?: number;
+    },
+    signal?: AbortSignal,
+  ) => request<AgentRun>("/agents/run", { method: "POST", token, body, signal }),
 };

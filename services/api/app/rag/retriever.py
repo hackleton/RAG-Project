@@ -125,6 +125,7 @@ class HybridRetriever:
         patient_id: uuid.UUID | None = None,
         document_ids: frozenset[uuid.UUID] | None = None,
         document_types: frozenset[str] | None = None,
+        exclude_patient_documents: bool = False,
         config: RetrievalConfig | None = None,
     ) -> RetrievalResult:
         config = config or self._config
@@ -135,6 +136,7 @@ class HybridRetriever:
             patient_id=patient_id,
             document_ids=document_ids,
             document_types=document_types,
+            exclude_patient_documents=exclude_patient_documents,
         )
 
         results, timings = await self._search(query, config, access)
@@ -175,6 +177,7 @@ class HybridRetriever:
         patient_id: uuid.UUID | None,
         document_ids: frozenset[uuid.UUID] | None,
         document_types: frozenset[str] | None,
+        exclude_patient_documents: bool = False,
     ) -> AccessFilter:
         """Build the pre-search filter from the caller's own scope.
 
@@ -186,6 +189,12 @@ class HybridRetriever:
         scope = principal.accessible_patient_ids
         if patient_id is not None:
             scope = frozenset({patient_id}) if scope is None or patient_id in scope else frozenset()
+        if exclude_patient_documents:
+            # An empty grant set matches only documents with no patient at all
+            # (see `build_filter`), which is exactly reference material. This
+            # narrows every caller including an admin, so it is safe to set
+            # from a tool's arguments.
+            scope = frozenset()
 
         return AccessFilter(
             patient_ids=scope,

@@ -16,7 +16,11 @@ from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.config import Settings, get_settings
+from app.agents.factory import build_registry
+from app.agents.planner import LlmPlanner, Planner, RuleBasedPlanner
+from app.agents.registry import ToolRegistry
+from app.agents.service import AgentService
+from app.core.config import PlannerName, Settings, get_settings
 from app.core.db import get_db_session
 from app.core.errors import AuthenticationError
 from app.core.logging import user_id_ctx
@@ -203,6 +207,58 @@ def get_rag_service(
 
 
 RagServiceDep = Annotated[RagService, Depends(get_rag_service)]
+
+
+def get_tool_registry(
+    request: Request,
+    settings: SettingsDep,
+    store: VectorStoreDep,
+    embedder: EmbedderDep,
+    llm: LLMDep,
+    config: RetrievalConfigDep,
+) -> ToolRegistry:
+    """The tools, their roles, and their collaborators.
+
+    Assembled per request for the same reason the document service is: the
+    registry is cheap, and an app built with different settings - a test, an
+    experiment run - must get tools wired from *its* settings rather than from
+    whatever the first request happened to build.
+    """
+    return build_registry(
+        settings=settings,
+        retriever=HybridRetriever(
+            store=store,
+            embedder=embedder,
+            reranker=request.app.state.reranker,
+            config=config,
+        ),
+        config=config,
+        llm=llm,
+    )
+
+
+ToolRegistryDep = Annotated[ToolRegistry, Depends(get_tool_registry)]
+
+
+def get_agent_service(
+    settings: SettingsDep,
+    registry: ToolRegistryDep,
+    llm: LLMDep,
+) -> AgentService:
+    planner_name = settings.effective_planner
+    planner: Planner = (
+        LlmPlanner(llm, registry) if planner_name is PlannerName.LLM else RuleBasedPlanner()
+    )
+    return AgentService(
+        registry=registry,
+        planner=planner,
+        llm=llm,
+        settings=settings,
+        planner_name=planner_name.value,
+    )
+
+
+AgentServiceDep = Annotated[AgentService, Depends(get_agent_service)]
 
 
 def client_ip(request: Request) -> str | None:

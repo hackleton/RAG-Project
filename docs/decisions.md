@@ -449,3 +449,172 @@ comparing chunk sizes is cleaner when generation is deterministic.
 that a paraphrase retrieves the right chunk. Tests assert plumbing and access
 control; quality is measured against the real models, by hand today and by the
 harness from Sprint 5.
+
+---
+
+## 23. The router is untrusted input, and the gate is the control
+
+**Decision.** Whatever selects a tool - an LLM, an intent rule, or text embedded
+in a retrieved document that the model chose to follow - produces only a name
+and a bag of arguments. Every proposed call then passes the same gate in
+`app/agents/registry.py`: does the tool exist, may this role use it, do the
+arguments type-check strictly, may this caller see this patient. Only then does
+anything run, and the outcome is audited either way.
+
+**Why.** The alternative is to let the planner's output *be* the authorisation
+decision, which makes a text generator a security boundary. It is not one, and
+it cannot be made into one by prompting. This is what turns plan section 12's
+"call an unauthorized tool" case into a structural non-event rather than
+something to hope the prompt prevents: the analyst role does not hold
+`retrieve_medications`, so the call is refused whether it came from a router, a
+user, or a sentence inside a document.
+
+Three details matter more than they look:
+
+* **Unknown tools are denied, not raised.** A planner naming a tool that was
+  never built is routine. The interesting artefact is the audit row, not a 500.
+* **`extra="forbid"` on every argument model.** An argument the tool does not
+  understand is a refusal, not a field silently dropped while the tool runs with
+  defaults nobody asked for.
+* **Patient resolution happens in the gate**, once, so no individual tool can
+  forget to do it.
+
+**Cost.** Every tool must declare an argument model and a role set, which is
+more ceremony than calling a function. The catalogue is also filtered by role
+*and* re-checked at dispatch - deliberate duplication, because the filter is a
+convenience for the prompt and the check is the control.
+
+**Revisit if** tools ever need to call each other freely. Today only
+`generate_report` composes others, and it does so *through* the dispatcher
+precisely so its sub-calls meet the same gate.
+
+---
+
+## 24. The safest SQL agent is the one that mostly does not generate SQL
+
+**Decision.** Two paths to structured data. `query_lab_results` is a
+parameterized query whose shape was fixed at development time. `run_sql` is the
+full plan section 10 chain, and it is **off by default** (`SQL_TOOL_ENABLED`).
+
+**Why.** Nearly every lab question anyone actually asks is "one patient, one
+test, over time", and that is expressible as a typed tool where nothing a model
+writes can change which tables are read or which rows come back. Generated SQL
+is for the questions that shape cannot express - not for the ones it can.
+Reaching for the general mechanism first is how a system acquires its least
+predictable input in exchange for nothing.
+
+Which roles get which path follows from the same reasoning. Clinicians have
+typed tools for everything they need, so they do not get `run_sql` at all.
+Analysts get `run_sql` and none of the patient tools, because "aggregate/cohort
+data only" is not expressible as a fixed query shape.
+
+**Cost.** Two code paths to the same tables, and a question that falls between
+them gets the worse answer rather than the better one. Accepted: the typed tool
+covers the common case, and the uncommon case is one where somebody is reading
+the output carefully anyway.
+
+---
+
+## 25. Row-level scope by CTE shadowing, not by a generated WHERE clause
+
+**Decision.** A validated statement is never rewritten. It is wrapped in common
+table expressions that take the names of the base tables it reads:
+
+```sql
+WITH lab_results AS (SELECT * FROM dbo.lab_results WHERE patient_id IN (:p0, :p1))
+SELECT test_name, value FROM lab_results     -- the generated statement, verbatim
+```
+
+A CTE name takes precedence over a base table of the same name, so every
+reference in the generated query resolves to the scoped set. The scope comes
+from the `Principal` and is bound as parameters.
+
+**Why.** The obvious alternative - ask the model to add
+`WHERE patient_id IN (...)` - makes row-level security a property of generated
+text, which is exactly the thing that cannot be relied on. The second
+alternative, rewriting the SQL with a parser, means owning a T-SQL parser and
+being wrong about some dialect corner eventually.
+
+**What makes it hold** is a pair of validator rules that look unrelated until
+you see them together:
+
+* **Schema-qualified names are rejected.** `dbo.lab_results` reaches past the
+  CTE to the base table, so only the scoping code may write one.
+* **A CTE named after a base table is rejected.** Otherwise the generated query
+  defines the scope the guard was about to impose.
+
+Remove either rule and the scoping is decorative. `test_sql_guard.py` names
+both, and `test_sql_tool.py` proves the shadowing against a real database -
+string assertions cannot tell you what a query planner will actually resolve.
+
+**Cost.** Ties the guard to dialects where a CTE shadows a base table (SQL
+Server and SQLite both do) and to a known patient key per table, so a new
+allow-listed table that is not in `PATIENT_KEY` would go unscoped. That is why
+the allow-list is derived from `PATIENT_KEY` rather than kept beside it.
+
+---
+
+## 26. `SELECT` is not the same thing as read-only
+
+**Decision.** The forbidden-keyword list blocks `INTO` alongside the obvious
+writes, and the guard rejects comments and multiple statements outright.
+
+**Why.** On SQL Server, `SELECT * INTO copied FROM patients` creates a table.
+It is a write, and it begins with the word `SELECT`. A guard that checks only
+the leading verb - the intuitive implementation - lets it straight through.
+Comments are the standard way to hide the rest of a statement from a scanner,
+so they are rejected rather than stripped.
+
+**Cost.** The keyword scan is deliberately over-broad: it matches words inside
+string literals too, so a query for a test named `'UPDATE panel'` would be
+refused. Over-rejection is the correct failure direction, and the rejection
+names the rule that fired, so it is actionable.
+
+**And it is still only one layer.** `READONLY_DATABASE_URL` is the other - a
+login with no write privilege, so a defect in any of the above still cannot
+mutate anything. `validate_production_safety` refuses to boot outside local/CI
+if the SQL tool is enabled and that login is missing or is the application's
+own. In local and CI there is no second login to have (SQLite has no roles), so
+the engine falls back to the application one and logs that it did, rather than
+looking enforced when it is not.
+
+---
+
+## 27. The query timeout is honest about which layer enforces it
+
+**Decision.** `READONLY_QUERY_TIMEOUT_SECONDS` is applied twice: as the ODBC
+driver's query timeout, set per connection, and as an `asyncio.timeout` around
+the await.
+
+**Why.** SQL Server has no per-login statement timeout, so unlike the read-only
+privilege this cannot be pinned to the login - it has to be set on each
+connection as it is opened, and not every driver honours it. The asyncio bound
+always works but only stops *waiting*; the server keeps working on a query
+nobody wants any more. The driver timeout is the half that actually cancels the
+statement. Applying both, and logging when the driver refuses the attribute,
+means the control is either enforced or visibly not - rather than looking
+airtight in the config and doing nothing.
+
+**Cost.** Two mechanisms for one concept, and a connect-time probe that tries
+attribute assignment against whatever the driver happens to expose.
+
+---
+
+## 28. Reference material was a corpus gap, not just a missing tool
+
+**Decision.** `search_knowledge` narrows retrieval to documents with no patient
+link, and the synthetic corpus gained three such documents - two guidelines and
+a drug reference - to give it something to find.
+
+**Why.** The narrowing is a real control rather than a hint: an empty patient
+scope matches only unattributed documents in the Qdrant filter, so the tool
+cannot return a patient document even for an admin. But without non-patient
+documents in the corpus, "the tool works" and "the corpus is empty" produce the
+same empty result - the tool would have been untestable and useless at the same
+time. It is also the only tool an analyst can get evidence from, so the gap
+would have made that whole role look broken.
+
+**Cost.** The generated corpus grew, which moves the document and chunk counts
+CI asserts on. Those counts are asserted on purpose: a change to chunking that
+alters them should surface as a failed assertion, not as mysterious evaluation
+drift three sprints later.

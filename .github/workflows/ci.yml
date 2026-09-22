@@ -103,19 +103,33 @@ jobs:
 
       # EMBEDDING_PROVIDER=hash keeps CI off the model download while still
       # exercising Qdrant, the pre-search filters, fusion and hydration.
+      #
+      # The expected document count is derived from the corpus rather than
+      # hard-coded: the previous magic number went stale the moment Sprint 4
+      # added reference material, and a number nobody can derive is a number
+      # people update without reading.
       - name: Corpus ingests, indexes, and re-ingesting is a no-op
         run: |
+          set -e
           echo "EMBEDDING_PROVIDER=hash" >> .env
+          echo "SQL_TOOL_ENABLED=true" >> .env
+          expected=$(find evaluation/datasets/documents -type f | wc -l)
           docker compose run --rm api python scripts/ingest_corpus.py | tee /tmp/first.log
-          grep -q "18 document" /tmp/first.log
-          grep -q "123 chunk" /tmp/first.log
+          grep -q "Ingested ${expected} document" /tmp/first.log
           docker compose run --rm api python scripts/ingest_corpus.py | tee /tmp/second.log
           grep -q "deduplicated" /tmp/second.log
 
-      - name: The index can be rebuilt from the database
+      # The database is the record and the index is derived from it, so the
+      # two disagreeing is the failure worth catching - a partial upsert leaves
+      # chunks that rank but cannot be hydrated.
+      - name: The index can be rebuilt, and matches the database
         run: |
+          set -e
+          chunks=$(sed -n 's/.*; \([0-9]*\) chunk(s) in the index.*/\1/p' /tmp/first.log)
+          test -n "$chunks" || { echo "could not read the chunk count"; exit 1; }
           docker compose run --rm api python scripts/reindex.py --all | tee /tmp/reindex.log
-          grep -q "123 points in the collection" /tmp/reindex.log
+          grep -q "${chunks} points in the collection" /tmp/reindex.log
+          echo "OK: ${chunks} chunks in SQL Server and in Qdrant"
 
       - name: API boots and answers
         run: |
@@ -150,6 +164,28 @@ jobs:
       # pre-search filter, checked over HTTP against the real stack.
       - name: Retrieval is grounded, cited and scoped
         run: docker compose run --rm api python scripts/smoke_retrieval.py
+
+      # Routing, the tool authorisation gate and patient scoping, over HTTP.
+      - name: The agent routes, cites, and refuses what it should
+        run: docker compose run --rm api python scripts/smoke_agent.py
+
+      # The guard's unit tests run against SQLite. The scoping depends on a
+      # CTE shadowing a base table, and "SQLite agrees" is not evidence about
+      # what T-SQL's planner will resolve - so the same path runs here against
+      # the real server.
+      - name: The SQL guard scopes and refuses on SQL Server
+        run: docker compose run --rm api python scripts/smoke_sql_tool.py
+
+      # The in-process guard is unit tested; this checks the layer underneath
+      # it, which is the one that still holds if the guard has a bug.
+      - name: The SQL tool's login cannot write even when asked directly
+        run: |
+          set -e
+          if docker compose exec -T mssql bash -c             "/opt/mssql-tools18/bin/sqlcmd -S localhost -U copilot_readonly              -P 'Local_Dev_ReadOnly_Password_1' -d copilot -C -b              -Q 'SELECT * INTO copied_patients FROM patients;'"; then
+            echo "FAIL: the read-only login created a table with SELECT INTO"
+            exit 1
+          fi
+          echo "OK: SELECT INTO is denied at the database, not only by the guard"
 
       - name: Dump logs on failure
         if: failure()

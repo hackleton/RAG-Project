@@ -1,13 +1,14 @@
 """End-to-end smoke check against a running API.
 
-Asserts the two properties that matter most about Sprint 3, over HTTP, against
-the real stack - not through the test suite's in-process shortcuts:
+Asserts the two properties that matter most about retrieval, over HTTP,
+against the real stack - not through the test suite's in-process shortcuts:
 
 1. A scoped user gets grounded, cited answers, and every citation maps to a
    chunk that was actually retrieved.
-2. A user without restricted access retrieves *nothing* for an
-   injection-shaped question - because their scope became a Qdrant filter
-   before the search ran, not because of anything in the prompt.
+2. A user without restricted access reaches no patient material for an
+   injection-shaped question, and their candidate pool is strictly smaller
+   than a clinician's - because their scope became a Qdrant filter before the
+   search ran, not because of anything in the prompt.
 
 Lives in the repo rather than inline in the CI workflow so it can be run by
 hand against a local stack, which is when it is most useful.
@@ -77,22 +78,44 @@ def check_grounded_and_cited(client: httpx.Client, token: str) -> None:
     )
 
 
-def check_scope_is_enforced_before_search(client: httpx.Client, token: str) -> None:
-    answer = ask(client, token, INJECTION_QUESTION)
+def check_scope_is_enforced_before_search(client: httpx.Client, tokens: dict[str, str]) -> None:
+    """An analyst reaches reference material and nothing patient-linked.
 
-    if answer["sources"]:
-        raise SmokeFailure(f"An analyst retrieved {len(answer['sources'])} restricted chunk(s).")
-    if answer["citations"]:
-        raise SmokeFailure("An analyst received citations for material out of scope.")
+    This used to assert that the analyst retrieved *nothing at all*, which
+    passed only because the corpus held no non-patient documents. Sprint 4
+    added guidelines and a drug reference, which an analyst may legitimately
+    read - so "nothing" stopped being the property worth asserting, and
+    "nothing restricted" is what the role model actually promises.
+    """
+    analyst = ask(client, tokens["analyst"], INJECTION_QUESTION)
 
-    # The point: nothing was fetched and then filtered - nothing was fetched.
-    candidates = answer["trace"]["candidates"]
-    if any(count for count in candidates.values()):
+    restricted = [source for source in analyst["sources"] if source["access_level"] == "restricted"]
+    if restricted:
+        raise SmokeFailure(f"An analyst retrieved {len(restricted)} restricted chunk(s).")
+
+    cited = {citation["chunk_id"] for citation in analyst["citations"]}
+    retrieved = {source["chunk_id"] for source in analyst["sources"]}
+    if not cited <= retrieved:
+        raise SmokeFailure("A citation points at a chunk that was not retrieved.")
+
+    # The filter runs *before* the search, so the analyst's candidate pool is
+    # drawn only from material they may see. Post-filtering would give both
+    # callers the same pool and then discard from it, so a strictly smaller
+    # pool here is the observable difference between the two designs.
+    clinician = ask(client, tokens["clinician"], INJECTION_QUESTION)
+    analyst_dense = analyst["trace"]["candidates"]["dense"]
+    clinician_dense = clinician["trace"]["candidates"]["dense"]
+    if analyst_dense >= clinician_dense:
         raise SmokeFailure(
-            f"Restricted chunks were retrieved and discarded afterwards: {candidates}."
+            f"The analyst's candidate pool ({analyst_dense}) was not smaller than the "
+            f"clinician's ({clinician_dense}) - the filter may be running after search."
         )
 
-    print(f"  scope enforced: 0 sources, candidates={candidates}")
+    levels = sorted({source["access_level"] for source in analyst["sources"]})
+    print(
+        f"  scope enforced: {len(analyst['sources'])} source(s), levels={levels}, "
+        f"candidates dense {analyst_dense} vs clinician {clinician_dense}"
+    )
 
 
 def main() -> int:
@@ -102,7 +125,7 @@ def main() -> int:
 
     checks = (
         ("clinician gets grounded, cited answers", check_grounded_and_cited, "clinician"),
-        ("analyst retrieves nothing restricted", check_scope_is_enforced_before_search, "analyst"),
+        ("analyst reaches nothing restricted", check_scope_is_enforced_before_search, None),
     )
 
     with httpx.Client(base_url=arguments.base_url, timeout=120.0) as client:
@@ -122,7 +145,9 @@ def main() -> int:
         for description, check, role in checks:
             print(f"- {description}")
             try:
-                check(client, tokens[role])
+                # A check comparing two callers needs them all; one that looks
+                # at a single role takes just that role's token.
+                check(client, tokens[role] if role else tokens)  # type: ignore[arg-type]
             except SmokeFailure as failure:
                 print(f"  FAILED: {failure}", file=sys.stderr)
                 return 1

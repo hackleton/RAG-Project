@@ -23,8 +23,8 @@ swapped in later as adapters rather than a rewrite — see
 | 1 | Foundation — repo, Docker, FastAPI, Next.js, SQL Server, auth, health | **Done** |
 | 2 | Document pipeline — upload, extraction, chunking, metadata | **Done** |
 | 3 | Search + RAG — embeddings, hybrid retrieval, reranking, citations | **Done** |
-| 4 | Agentic AI — router, RAG tool, SQL tool, synthesis | Next |
-| 5 | Evaluation — dataset, retrieval + generation metrics, regression runs | Planned |
+| 4 | Agentic AI — router, tool gate, SQL tool, synthesis | **Done** |
+| 5 | Evaluation — dataset, retrieval + generation metrics, regression runs | Next |
 | 6 | Security — RBAC depth, metadata filters, SQL restrictions, injection tests | Planned |
 | 7 | Production — Redis cache, tracing, cost/latency dashboard, CI/CD | Planned |
 | 8 | Interview hardening — architecture review, failure analysis, demo | Planned |
@@ -55,9 +55,10 @@ behaviour exists.
 - **Document pipeline**: upload → local storage → extraction (PDF/DOCX/TXT/MD)
   → normalisation → section-aware chunking → chunks with full provenance.
   Deduplicated on content checksum, so re-ingesting is idempotent.
-- **Synthetic corpus**: 18 generated documents across 3 patients — clinical
-  notes, lab reports and discharge summaries — reproducible from a fixed seed
-  so the Sprint 5 evaluation set can reference specific values.
+- **Synthetic corpus**: generated documents across 3 patients — clinical
+  notes, lab reports and discharge summaries — plus guidelines and a drug
+  reference that belong to no patient, reproducible from a fixed seed so the
+  Sprint 5 evaluation set can reference specific values.
 - **Hybrid retrieval**: dense vectors (`bge-small`, 384d) and BM25 sparse
   vectors in one Qdrant collection, fused with Reciprocal Rank Fusion and
   reranked by a local cross-encoder. Every response carries the trace — the
@@ -70,6 +71,18 @@ behaviour exists.
 - **Access control enforced before search**: the caller's scope becomes a
   Qdrant filter, so a chunk they may not see is never retrieved — not fetched
   and then hidden.
+- **Agent workflow**: a router proposes tool calls, every call passes one
+  authorisation gate, and synthesis composes a single cited answer from what
+  the tools returned. Six tools: `search_documents`, `search_knowledge`,
+  `retrieve_medications`, `get_patient_record`, `query_lab_results` and
+  `generate_report`, plus an optional `run_sql`.
+- **Tool authorisation**: the router is treated as untrusted input. Existence,
+  role, strict argument validation and patient access are all checked before a
+  tool runs, and every call and refusal is audited.
+- **SQL safety chain**: generated SQL is validated against an allow-list,
+  scoped to the caller's patients by CTE shadowing rather than by a generated
+  `WHERE` clause, executed with bound parameters on a login that has no write
+  privilege, and bounded in both rows and time.
 
 ## Quick start
 
@@ -89,7 +102,8 @@ same service path an operator upload takes — same validation, deduplication,
 access control and audit trail. Ingestion embeds and indexes as it goes; the
 first run downloads the embedding model (~130MB) and the reranker (~80MB).
 
-Then sign in and open **Ask the documents**.
+Then sign in and open **Ask the documents** for grounded RAG chat, or
+**Agent** for the routed, multi-tool workflow.
 
 | Service | URL |
 | --- | --- |
@@ -143,6 +157,19 @@ in [decision 21](docs/decisions.md) was found:
 
 ```bash
 curl -s -X POST localhost:8000/api/v1/search -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d '{"query":"current medications list","overrides":{"mode":"hybrid","rerank":false,"top_k":3}}'
+```
+
+Run the agent and see which tools it chose, which were refused, and why:
+
+```bash
+curl -s -X POST localhost:8000/api/v1/agents/run -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d '{"question":"give me a summary of SYN-0001"}' | python -m json.tool
+```
+
+The tools available to the calling role — the role model, inspectable rather
+than buried in a prompt:
+
+```bash
+curl -s localhost:8000/api/v1/agents/tools -H "Authorization: Bearer $TOKEN"
 ```
 
 Open a SQL prompt as the restricted agent login (writes should be refused):

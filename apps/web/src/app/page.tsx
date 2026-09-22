@@ -12,8 +12,8 @@ const ROADMAP = [
   { sprint: "Sprint 1", title: "Foundation", state: "done" },
   { sprint: "Sprint 2", title: "Document pipeline", state: "done" },
   { sprint: "Sprint 3", title: "Hybrid retrieval and citations", state: "done" },
-  { sprint: "Sprint 4", title: "Agentic workflow", state: "next" },
-  { sprint: "Sprint 5", title: "Evaluation harness", state: "planned" },
+  { sprint: "Sprint 4", title: "Agentic workflow", state: "done" },
+  { sprint: "Sprint 5", title: "Evaluation harness", state: "next" },
   { sprint: "Sprint 6", title: "Security hardening", state: "planned" },
   { sprint: "Sprint 7", title: "Cache, tracing, CI/CD", state: "planned" },
 ] as const;
@@ -68,9 +68,15 @@ function Dashboard({ user }: { user: CurrentUser }) {
         <div className="flex gap-2">
           <Link
             href="/chat"
-            className="rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-accent-ink"
+            className="rounded-md border border-border px-3 py-1.5 text-sm"
           >
             Ask the documents
+          </Link>
+          <Link
+            href="/agent"
+            className="rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-accent-ink"
+          >
+            Agent
           </Link>
           <button
             onClick={signOut}
@@ -128,8 +134,8 @@ function Dashboard({ user }: { user: CurrentUser }) {
           ))}
         </ol>
         <p className="mt-3 text-xs text-ink-muted">
-          The agent view lands with Sprint 4. Its endpoint is already published in
-          the API schema and returns 501 until then.
+          Retrieval quality is probed by hand, not yet measured. Sprint 5 adds the
+          dataset and the metrics that turn that into a number.
         </p>
       </section>
     </main>
