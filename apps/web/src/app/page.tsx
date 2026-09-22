@@ -13,8 +13,8 @@ const ROADMAP = [
   { sprint: "Sprint 2", title: "Document pipeline", state: "done" },
   { sprint: "Sprint 3", title: "Hybrid retrieval and citations", state: "done" },
   { sprint: "Sprint 4", title: "Agentic workflow", state: "done" },
-  { sprint: "Sprint 5", title: "Evaluation harness", state: "next" },
-  { sprint: "Sprint 6", title: "Security hardening", state: "planned" },
+  { sprint: "Sprint 5", title: "Evaluation harness", state: "done" },
+  { sprint: "Sprint 6", title: "Security hardening", state: "next" },
   { sprint: "Sprint 7", title: "Cache, tracing, CI/CD", state: "planned" },
 ] as const;
 
@@ -140,8 +140,10 @@ function Dashboard({ user }: { user: CurrentUser }) {
           ))}
         </ol>
         <p className="mt-3 text-xs text-ink-muted">
-          Retrieval quality is probed by hand, not yet measured. Sprint 5 adds the
-          dataset and the metrics that turn that into a number.
+          Retrieval quality is measured against a 107-case question set derived
+          from the corpus, and a regression in it fails the build. Generation
+          metrics run against the deterministic stub by default, so they measure
+          the stub rather than a model.
         </p>
       </section>
     </main>
