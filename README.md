@@ -24,15 +24,13 @@ swapped in later as adapters rather than a rewrite — see
 | 2 | Document pipeline — upload, extraction, chunking, metadata | **Done** |
 | 3 | Search + RAG — embeddings, hybrid retrieval, reranking, citations | **Done** |
 | 4 | Agentic AI — router, tool gate, SQL tool, synthesis | **Done** |
-| 5 | Evaluation — dataset, retrieval + generation metrics, regression runs | Next |
-| 6 | Security — RBAC depth, metadata filters, SQL restrictions, injection tests | Planned |
+| 5 | Evaluation — dataset, retrieval + generation metrics, regression runs | **Done** |
+| 6 | Security — RBAC depth, metadata filters, SQL restrictions, injection tests | Next |
 | 7 | Production — Redis cache, tracing, cost/latency dashboard, CI/CD | Planned |
 | 8 | Interview hardening — architecture review, failure analysis, demo | Planned |
 
-Endpoints for unbuilt sprints are already published in the OpenAPI schema and
-return `501` with the sprint they are scheduled for. That keeps the API contract
-visible to the frontend and the evaluation harness without pretending the
-behaviour exists.
+Every endpoint in the plan now has behaviour behind it; nothing returns `501`
+any more.
 
 ## What works today
 
@@ -83,6 +81,16 @@ behaviour exists.
   scoped to the caller's patients by CTE shadowing rather than by a generated
   `WHERE` clause, executed with bound parameters on a login that has no write
   privilege, and bounded in both rows and time.
+- **Evaluation**: a 107-case question set derived from the corpus itself, scored
+  for retrieval (Recall@K, Precision@K, MRR, NDCG), generation (key-fact
+  coverage, citation correctness, unsupported-number rate), system (P50/P95
+  latency, error rate, tokens, cost) and security (injection-blocked and
+  access-contained rates). Runs persist per-case results, and `--gate` fails a
+  build when a gated metric drops.
+- **Experiment sweeps**: the whole dataset under eight retrieval
+  configurations — vector-only, BM25-only, hybrid, reranker on and off, top-K
+  and candidate-pool variants — written up as a Markdown comparison with each
+  experiment's hypothesis, in `evaluation/experiments/`.
 
 ## Quick start
 
@@ -172,6 +180,30 @@ than buried in a prompt:
 curl -s localhost:8000/api/v1/agents/tools -H "Authorization: Bearer $TOKEN"
 ```
 
+Score the question set against the deployed configuration. `--gate` turns a
+regression into a non-zero exit (this is what CI runs); `--accept` records the
+current numbers as the new baseline, which is deliberately a human act:
+
+```bash
+docker compose run --rm api python scripts/run_evaluation.py
+```
+
+Sweep the retrieval configurations from plan section 14 and write the
+comparison to `evaluation/experiments/`. This runs the dataset once per
+configuration, so expect it to take a while:
+
+```bash
+docker compose run --rm api python scripts/run_experiments.py
+```
+
+Regenerate the question set after changing the corpus. The expected values are
+parsed out of the documents, so they cannot drift from them — and CI fails if
+regenerating produces a diff:
+
+```bash
+docker compose run --rm api python scripts/generate_evaluation_dataset.py
+```
+
 Open a SQL prompt as the restricted agent login (writes should be refused):
 
 ```bash
@@ -231,11 +263,15 @@ services/api/           FastAPI service
   app/providers/        storage, extraction, embedding, LLM adapters
   app/documents/        normalisation, section detection, chunking, pipeline
   app/rag/              sparse BM25, fusion, retriever, indexer, prompts, chat
-  app/{agents,tools,evaluation}/                 later sprints
+  app/agents/           planner, tool registry and authorisation gate, synthesis
+  app/tools/            the tools themselves, and the SQL guard
+  app/evaluation/       dataset, metrics, grading, harness, experiment sweeps
   alembic/              migrations
   tests/                pytest suite
 infrastructure/docker/  SQL Server bootstrap (database, logins, DENYs)
-evaluation/             datasets, experiments, reports
+evaluation/datasets/    the synthetic corpus and the versioned question set
+evaluation/experiments/ sweep write-ups (plan section 14)
+evaluation/reports/     per-run metrics, and the accepted baseline
 docs/                   project plan and decision records
 ```
 
@@ -273,9 +309,30 @@ Recorded in full in [docs/decisions.md](docs/decisions.md). The short version:
 - Local models are weaker than the Azure deployments the plan names. The
   evaluation measures relative effects (hybrid vs vector-only, reranker on vs
   off), which survives that; absolute quality numbers do not transfer.
-- Retrieval quality is not yet *measured*, only probed by hand. The three-query
-  comparison in [decision 21](docs/decisions.md) found a real bug but is not
-  evidence about quality; that needs Sprint 5's dataset and metrics.
+- The evaluation corpus is 21 documents, which is small enough that
+  patient-scoped retrieval saturates Recall@5 at 1.000. The `hard` tier is
+  unscoped precisely so the metric has somewhere to fall
+  ([decision 31](docs/decisions.md)); the aggregate still mixes both regimes.
+- Generation metrics run against the `echo` stub by default, so they measure
+  the stub. They are reported but deliberately not gated
+  ([decision 33](docs/decisions.md)) — `refusal_rate_when_unanswerable` reads
+  0.0 for exactly this reason, and would need a real model to mean anything.
+- The baseline is per-configuration. CI runs hashed embeddings and compares
+  against `baseline-hash.json`; a local run on `bge-small` compares against
+  `baseline.json`. Comparing across the two is refused rather than reported as
+  a regression.
+- **On this corpus the cross-encoder makes retrieval slightly worse and costs
+  1.6 seconds.** Turning it off scores +0.011 recall, +0.062 MRR and +0.045
+  NDCG at a p95 of 197ms against 1799ms. It is still on by default, and that is
+  a judgement made against the evidence rather than with it: with 41 chunks per
+  patient the candidate pool is the whole searchable set, which is the one
+  regime where reranking cannot help and can only mis-order. That is a
+  hypothesis about scale, not a finding. See the sweep in
+  `evaluation/experiments/`.
+- For the same reason, "vector-only vs hybrid" and "candidate pool tuning"
+  (plan section 14) are **unanswered**: four configurations returned identical
+  metrics to four decimal places, because the pool already contained
+  everything. Answering them needs a corpus of hundreds of documents, not 21.
 - Generation defaults to the `echo` stub, which quotes retrieved context rather
   than composing prose. Set `LLM_PROVIDER=ollama` and point
   `OLLAMA_BASE_URL` at a running Ollama for real answers.

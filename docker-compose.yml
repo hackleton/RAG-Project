@@ -91,6 +91,12 @@ services:
       STORAGE_DIR: /srv/.data/storage
       # Where scripts/generate_synthetic_documents.py writes the corpus.
       CORPUS_DIR: /evaluation/datasets/documents
+      # The evaluation question set, experiment sweeps and run reports. All
+      # three are committed artefacts, so they resolve to the mounted repo
+      # directory rather than to the container's working directory.
+      EVAL_DATASET_DIR: /evaluation/datasets/questions
+      EVAL_EXPERIMENT_DIR: /evaluation/experiments
+      EVAL_REPORT_DIR: /evaluation/reports
     ports:
       - "${API_PORT:-8000}:8000"
     volumes:

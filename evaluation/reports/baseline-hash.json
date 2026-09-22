@@ -1,0 +1,177 @@
+{
+  "by_category": {
+    "access_control": {
+      "cases": 3,
+      "pass_rate": 1.0
+    },
+    "diagnosis": {
+      "cases": 9,
+      "hit_rate": 1.0,
+      "mrr": 1.0,
+      "ndcg_at_k": 1.0,
+      "pass_rate": 1.0,
+      "precision_at_k": 0.4,
+      "recall_at_k": 1.0
+    },
+    "discharge": {
+      "cases": 6,
+      "hit_rate": 1.0,
+      "mrr": 0.625,
+      "ndcg_at_k": 0.7153,
+      "pass_rate": 1.0,
+      "precision_at_k": 0.3,
+      "recall_at_k": 1.0
+    },
+    "drug_reference": {
+      "cases": 7,
+      "hit_rate": 1.0,
+      "mrr": 1.0,
+      "ndcg_at_k": 1.0,
+      "pass_rate": 1.0,
+      "precision_at_k": 0.5714,
+      "recall_at_k": 1.0
+    },
+    "guideline": {
+      "cases": 9,
+      "hit_rate": 1.0,
+      "mrr": 0.9444,
+      "ndcg_at_k": 0.959,
+      "pass_rate": 1.0,
+      "precision_at_k": 0.4889,
+      "recall_at_k": 1.0
+    },
+    "injection": {
+      "cases": 3,
+      "pass_rate": 1.0
+    },
+    "lab_value": {
+      "cases": 33,
+      "hit_rate": 1.0,
+      "mrr": 0.6424,
+      "ndcg_at_k": 0.733,
+      "pass_rate": 1.0,
+      "precision_at_k": 0.2121,
+      "recall_at_k": 1.0
+    },
+    "medication": {
+      "cases": 12,
+      "hit_rate": 1.0,
+      "mrr": 0.7153,
+      "ndcg_at_k": 0.7879,
+      "pass_rate": 1.0,
+      "precision_at_k": 0.3333,
+      "recall_at_k": 1.0
+    },
+    "temporal": {
+      "cases": 9,
+      "hit_rate": 1.0,
+      "mrr": 0.7222,
+      "ndcg_at_k": 0.7791,
+      "pass_rate": 1.0,
+      "precision_at_k": 0.4889,
+      "recall_at_k": 0.9259
+    },
+    "unanswerable": {
+      "cases": 7,
+      "pass_rate": 0.0
+    },
+    "vitals": {
+      "cases": 9,
+      "hit_rate": 1.0,
+      "mrr": 0.8333,
+      "ndcg_at_k": 0.877,
+      "pass_rate": 1.0,
+      "precision_at_k": 0.2,
+      "recall_at_k": 1.0
+    }
+  },
+  "by_difficulty": {
+    "easy": {
+      "cases": 26,
+      "hit_rate": 1.0,
+      "mrr": 0.8205,
+      "ndcg_at_k": 0.8672,
+      "pass_rate": 1.0,
+      "precision_at_k": 0.2923,
+      "recall_at_k": 1.0
+    },
+    "hard": {
+      "cases": 33,
+      "hit_rate": 1.0,
+      "mrr": 0.7753,
+      "ndcg_at_k": 0.8291,
+      "pass_rate": 1.0,
+      "precision_at_k": 0.3152,
+      "recall_at_k": 0.9798
+    },
+    "medium": {
+      "cases": 35,
+      "hit_rate": 1.0,
+      "mrr": 0.7176,
+      "ndcg_at_k": 0.7875,
+      "pass_rate": 0.8333,
+      "precision_at_k": 0.3714,
+      "recall_at_k": 1.0
+    }
+  },
+  "cases": 107,
+  "config": {
+    "chunk_overlap_tokens": 64,
+    "chunk_target_tokens": 512,
+    "embedding_model": "BAAI/bge-small-en-v1.5",
+    "embedding_provider": "hash",
+    "llm_model": "llama3.1:8b",
+    "llm_provider": "echo",
+    "reranker_model": "Xenova/ms-marco-MiniLM-L-6-v2",
+    "retrieval": {
+      "candidate_pool": 50,
+      "mode": "hybrid",
+      "rerank": true,
+      "rerank_score_threshold": null,
+      "rerank_top_n": 30,
+      "rrf_k": 60,
+      "top_k": 5
+    }
+  },
+  "dataset_version": "v1",
+  "generation": {
+    "answered_with_citations": 1.0,
+    "cases_with_facts": 94,
+    "citation_precision": 0.2897,
+    "cited_expected_source": 1.0,
+    "fact_coverage": 0.1206,
+    "hallucinated_citation_rate": 0.0,
+    "unsupported_number_rate": 0.0
+  },
+  "pass_rate": 0.9346,
+  "passed": 100,
+  "recorded_at": "2026-09-22T20:25:18+00:00",
+  "retrieval": {
+    "cases": 94,
+    "hit_rate": 1.0,
+    "mrr": 0.7663,
+    "ndcg_at_k": 0.8242,
+    "precision_at_k": 0.3298,
+    "recall_at_k": 0.9929
+  },
+  "security": {
+    "access_contained_rate": 1.0,
+    "access_control_cases": 3,
+    "injection_blocked_rate": 1.0,
+    "injection_cases": 3,
+    "out_of_scope_identifier_cases": 0,
+    "out_of_scope_source_cases": 0,
+    "refusal_rate_when_unanswerable": 0.0
+  },
+  "system": {
+    "completion_tokens": 10711,
+    "error_rate": 0.0,
+    "errors": 0,
+    "estimated_cost_usd": 0.0,
+    "max_ms": 163.0,
+    "mean_ms": 39.0,
+    "p50_ms": 30.0,
+    "p95_ms": 78.2,
+    "prompt_tokens": 45088
+  }
+}

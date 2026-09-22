@@ -187,6 +187,31 @@ jobs:
           fi
           echo "OK: SELECT INTO is denied at the database, not only by the guard"
 
+      # The question set is parsed out of the corpus, so a corpus change that
+      # slipped through above would show up here as a changed dataset rather
+      # than as metrics that quietly drift.
+      - name: Evaluation dataset is reproducible from the corpus
+        run: |
+          docker compose run --rm api python scripts/generate_evaluation_dataset.py
+          if ! git diff --exit-code evaluation/datasets/questions; then
+            echo "The generated question set changed - commit it, or fix the generator"
+            exit 1
+          fi
+
+      # The whole of project plan section 13, against the real stack: retrieval
+      # metrics, generation metrics, latency percentiles and the security rates.
+      # `--gate` fails the build when a gated metric drops further than its
+      # tolerance allows, which is the only thing that makes the numbers matter.
+      #
+      # Runs on EMBEDDING_PROVIDER=hash and LLM_PROVIDER=echo, the same
+      # deterministic stack the rest of this job uses - so a moved number is a
+      # moved system rather than model sampling. The baseline was recorded on
+      # the same configuration; `run_evaluation.py` refuses to compare across
+      # dataset versions rather than reporting a meaningless delta.
+      - name: Evaluation metrics have not regressed
+        run: |
+          docker compose run --rm api python scripts/run_evaluation.py --gate             --baseline /evaluation/reports/baseline-hash.json
+
       - name: Dump logs on failure
         if: failure()
         run: docker compose logs

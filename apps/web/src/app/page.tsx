@@ -73,6 +73,12 @@ function Dashboard({ user }: { user: CurrentUser }) {
             Ask the documents
           </Link>
           <Link
+            href="/evaluation"
+            className="rounded-md border border-border px-3 py-1.5 text-sm"
+          >
+            Evaluation
+          </Link>
+          <Link
             href="/agent"
             className="rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-accent-ink"
           >

@@ -185,6 +185,40 @@ export interface RetrievalOverrides {
   rerank?: boolean;
 }
 
+export interface EvaluationRun {
+  id: string;
+  dataset_version: string;
+  /** "running" | "completed" | "failed" - a run is polled, not awaited. */
+  status: string;
+  case_count: number;
+  /** Retrieval settings plus the models that produced the numbers. */
+  config: Record<string, unknown>;
+  /** { retrieval, generation, system, security, by_category, by_difficulty } */
+  metrics: Record<string, Record<string, number> | number | undefined>;
+  started_at: string | null;
+  completed_at: string | null;
+  created_at: string;
+}
+
+export interface EvaluationResult {
+  case_key: string;
+  question: string;
+  category: string;
+  difficulty: string;
+  persona: string;
+  passed: boolean;
+  answer: string | null;
+  scores: Record<string, unknown>;
+  retrieved_sources: { filename: string; section: string | null }[];
+  latency_ms: number | null;
+  error: string | null;
+}
+
+export interface EvaluationRunDetail {
+  run: EvaluationRun;
+  results: EvaluationResult[];
+}
+
 interface ErrorEnvelope {
   error: { code: string; message: string; details: Record<string, unknown> };
   request_id: string | null;
@@ -298,4 +332,19 @@ export const api = {
     },
     signal?: AbortSignal,
   ) => request<AgentRun>("/agents/run", { method: "POST", token, body, signal }),
+
+  evaluations: (token: string, signal?: AbortSignal) =>
+    request<{ runs: EvaluationRun[] }>("/evaluations", { token, signal }),
+
+  evaluation: (token: string, runId: string, failuresOnly = false, signal?: AbortSignal) =>
+    request<EvaluationRunDetail>(
+      `/evaluations/${runId}${failuresOnly ? "?failures_only=true" : ""}`,
+      { token, signal },
+    ),
+
+  runEvaluation: (
+    token: string,
+    body: { dataset_version?: string; limit?: number; overrides?: RetrievalOverrides },
+    signal?: AbortSignal,
+  ) => request<EvaluationRun>("/evaluations/run", { method: "POST", token, body, signal }),
 };

@@ -44,11 +44,17 @@ async def test_admin_only_endpoint_rejects_an_analyst(
 async def test_admin_only_endpoint_admits_an_admin(
     client: AsyncClient, api: str, admin_token: str
 ) -> None:
+    """Authorisation passed, so the handler ran and validated the body.
+
+    This asserts on 403-versus-not, deliberately: it is a test about the role
+    gate, and pinning it to whatever the handler currently returns is what made
+    it fail the moment Sprint 5 implemented the endpoint. 422 here means the
+    request reached validation - which is all this test is entitled to know.
+    """
     response = await client.post(f"{api}/evaluations/run", headers=auth(admin_token))
 
-    # 501: authorisation passed, the handler ran, the behaviour lands in Sprint 5.
-    assert response.status_code == 501
-    assert response.json()["error"]["details"]["sprint"].startswith("Sprint 5")
+    assert response.status_code != 403
+    assert response.status_code == 422  # no dataset in the test environment
 
 
 async def test_upload_rejects_an_analyst(client: AsyncClient, api: str, analyst_token: str) -> None:

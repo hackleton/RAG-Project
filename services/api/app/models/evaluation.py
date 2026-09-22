@@ -10,7 +10,16 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import DateTime, Float, ForeignKey, Index, Integer, String, UnicodeText
+from sqlalchemy import (
+    DateTime,
+    Float,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    UnicodeText,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.types import Uuid
 
@@ -19,9 +28,17 @@ from app.models.base import Base, JSONType, TimestampMixin, UUIDPrimaryKeyMixin
 
 class EvaluationCase(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     __tablename__ = "evaluation_cases"
-    __table_args__ = (Index("ix_evaluation_cases_dataset_category", "dataset_version", "category"),)
+    __table_args__ = (
+        Index("ix_evaluation_cases_dataset_category", "dataset_version", "category"),
+        # The dataset file is the source of truth; this table materialises it.
+        # `case_key` is what makes a case the same case across re-syncs, so
+        # per-case history survives a dataset edit.
+        UniqueConstraint("dataset_version", "case_key", name="uq_evaluation_cases_version_key"),
+    )
 
     dataset_version: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    # Stable, human-readable identity from the dataset file (e.g. "labs-0001-a1c").
+    case_key: Mapped[str] = mapped_column(String(64), nullable=False)
     question: Mapped[str] = mapped_column(UnicodeText, nullable=False)
     expected_answer: Mapped[str | None] = mapped_column(UnicodeText)
     # Key facts an answer must contain - graded independently of wording.
@@ -31,6 +48,13 @@ class EvaluationCase(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     )
     category: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     difficulty: Mapped[str] = mapped_column(String(16), nullable=False)
+    # Which role asks. An access-control case is only meaningful when the
+    # caller's scope excludes the material, so the persona belongs to the case
+    # rather than to whoever happens to launch the run.
+    persona: Mapped[str] = mapped_column(String(16), default="clinician", nullable=False)
+    # The patient the question is about, if any. Narrows retrieval the way a
+    # real caller would; NULL means the caller's whole scope.
+    patient_external_id: Mapped[str | None] = mapped_column(String(64))
 
 
 class EvaluationRun(UUIDPrimaryKeyMixin, TimestampMixin, Base):

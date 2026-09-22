@@ -618,3 +618,181 @@ would have made that whole role look broken.
 CI asserts on. Those counts are asserted on purpose: a change to chunking that
 alters them should surface as a failed assertion, not as mysterious evaluation
 drift three sprints later.
+
+---
+
+## 29. The evaluation dataset is derived from the corpus, not written by hand
+
+**Decision.** `scripts/generate_evaluation_dataset.py` parses the generated
+corpus and emits the ~107 cases, with their expected values read out of the
+documents themselves. The dataset is committed as JSONL, versioned by filename,
+and CI fails if regenerating it produces a diff.
+
+**Why.** The corpus is generated from a fixed seed, so the values in it - "HbA1c
+7.4%", "Lisinopril 10 mg once daily" - are whatever that seed produced. A
+hand-written dataset would encode those values a second time, and the first
+change to the seed, the conditions list or a document template would silently
+invalidate every expected answer. Nothing would fail. The metrics would just
+drop, and the drop would read as a retrieval regression. Deriving the
+expectations makes them true by construction.
+
+**Cost.** The questions are templated, so they are less varied than a human
+would write, and a template bug is a systematic bug across every case using it.
+The mitigation is that the templates are few and readable, and that the corpus
+is small enough to check a sample by hand.
+
+**Revisit if.** The corpus stops being generated - real (still synthetic but
+hand-authored) documents would make parsing fragile, and hand-written cases
+would then be the honest option.
+
+---
+
+## 30. Expected sources are filenames; NDCG is computed over documents
+
+**Decision.** A case names expected *documents*, never chunk ids and (in
+practice) never sections. Precision@K and MRR are measured over the retrieved
+chunks; Recall@K and NDCG@K are measured over distinct documents.
+
+**Why.** Chunk ids are assigned at ingestion and section names come from a
+heuristic detector, so both are functions of the chunking configuration - which
+project plan section 14 treats as an experiment variable. A dataset pinned to
+them would be invalidated by the very sweep it exists to support.
+
+The mixed granularity is not laziness; it is what each metric is asking.
+Precision@K asks how much of the context the model was handed was useful, which
+is a chunk-level question. Recall and NDCG compare the ranking against the ideal
+ordering of the expected sources, so their ranking must be counted in the same
+units the expectations are. The first full run proved the point: with
+chunk-level relevance against document-level expectations, NDCG came back at
+**1.0073** - three chunks of one expected document contributing three gains
+against an ideal built from one. A metric above its own maximum is the visible
+form of that bug; the invisible form is every number being slightly wrong.
+
+**Cost.** Two granularities in one metric block, which has to be explained
+(and is, in `metrics.py` and in the tests).
+
+**Revisit if.** The dataset ever gains stable chunk-level ground truth - at
+which point everything moves to chunks and the distinction disappears.
+
+---
+
+## 31. The hard tier is the unscoped tier, because the metric was saturated
+
+**Decision.** `easy` and `medium` cases send `patient_external_id`, so retrieval
+searches that patient's six documents. `hard` cases send nothing and name the
+patient in the question text, so retrieval searches all twenty-one.
+
+**Why.** Both flows are real - a clinician with a patient open versus someone
+searching from the top - but the choice here was forced by a measurement. The
+first full run, with every case scoped to its patient, returned recall@5 of
+**exactly 1.000 across all 94 retrieval cases**. That is not a good score; it is
+a metric with no room to fall, and a gate on it could never fire. Unscoped cases
+gave it somewhere to go: recall@5 moved to 0.94 overall, 0.88 on lab values and
+0.82 on the multi-document temporal cases.
+
+**Cost.** Two retrieval regimes in one dataset, so the aggregate mixes them. The
+per-difficulty breakdown exists for exactly that reason.
+
+**Revisit if.** The corpus grows to the point where even a patient-scoped search
+is discriminating - with 21 documents it is not.
+
+---
+
+## 32. Grading is deterministic by default; the LLM judge is opt-in
+
+**Decision.** Answer correctness is key-fact coverage, citation correctness is
+whether cited chunks came from expected sources plus a count of out-of-range
+bracket numbers, and faithfulness is the unsupported-number rate. `LlmJudge`
+exists, is never the regression gate, and is off unless asked for.
+
+**Why.** An LLM judge is itself an unvalidated component: its scores drift
+between model versions, it cannot run in CI without a model download, and it
+makes a run non-reproducible - which defeats the point of having a gate. The
+deterministic metrics are narrower but exact, so a change in one of them is
+always a change in the *system* rather than in the grader.
+
+The faithfulness proxy deserves naming honestly: it catches a number in the
+answer that is absent from the context, and nothing else. It cannot see a
+fabricated claim made without a number. It is here because in a clinical setting
+the numbers are what get acted on, and a fabricated lab value is the specific
+failure that matters most.
+
+**Cost.** Fluency, relevance and usefulness go unmeasured by default. The judge
+is the answer when a real model is configured, and its scores are recorded
+alongside the deterministic ones rather than replacing them.
+
+**Revisit if.** A local judge model proves stable enough across versions to gate
+on - at which point it joins the gate rather than replacing it.
+
+---
+
+## 33. Security cases are judged on containment, not on refusal
+
+**Decision.** Injection and access-control cases pass when nothing outside the
+caller's scope reached the answer - no out-of-scope document, no out-of-scope
+patient identifier. Whether the model then says "I cannot answer" is measured
+separately, as `refusal_rate_when_unanswerable`, and is not gated.
+
+**Why.** Containment is guaranteed by the pre-search filter, so it holds
+whatever model is generating; refusal is a generation behaviour and does not.
+With `LLM_PROVIDER=echo` the stub composes an answer from whatever context it
+was handed and never refuses, so a refusal-based security metric would read 0%
+and look like a breach when nothing had breached. Gating on it would enforce the
+stub's behaviour and fail the day a real model was plugged in.
+
+The corollary is visible in the numbers: the committed baseline shows
+`injection_blocked_rate` and `access_contained_rate` at 1.0 with
+`refusal_rate_when_unanswerable` at 0.0. Both are true, and they are true about
+different components.
+
+An identifier the *question* already contained is never counted as leaked.
+"I have no records for SYN-0003" is the correct answer to a question about
+SYN-0003, and scoring it as disclosure would push the system towards a worse
+answer.
+
+**Cost.** Two numbers where a reader might expect one, and a security metric
+that says nothing about answer quality.
+
+---
+
+## 34. The baseline is written by hand; the gate is short
+
+**Decision.** `run_evaluation.py --accept` writes
+`evaluation/reports/baseline.json`. Nothing writes it automatically. `--gate`
+turns a regression into a non-zero exit, and six metrics are gated: recall@K,
+MRR, NDCG, injection-blocked rate, access-contained rate and error rate.
+
+**Why.** A baseline that updated itself at the end of every run could only ever
+pass, which is the one thing a baseline must not do. The gate is short because
+gating everything makes the build fail on noise, and a gate people routinely
+override is not a gate. The two security rates have a tolerance of exactly zero;
+the retrieval metrics have 0.05, which is wide enough to absorb a reranker tie
+and narrow enough to catch a broken filter.
+
+Generation metrics are deliberately *not* gated: with the echo provider they
+measure the stub. A baseline recorded before a metric existed is skipped rather
+than scored as a catastrophic regression, for the same reason - the failure mode
+to avoid is teaching people to bypass the check.
+
+A baseline also has to say what it is a baseline *of*. Two runs are comparable
+only when the index behind them is the same, so the dataset version, embedding
+provider, embedding model and chunk settings must all match or the comparison
+is refused - and under `--gate` a refusal is fatal, because a gate that cannot
+run has not passed. CI therefore compares against `baseline-hash.json`, taken
+under the hashed embeddings CI ingests with; a local run on `bge-small`
+compares against `baseline.json`.
+
+The retrieval configuration is deliberately **not** on that list, and getting
+that wrong is worth recording. The first version included it, which meant
+dropping `RETRIEVAL_TOP_K` from 5 to 3 - a change costing 0.124 recall and
+0.057 NDCG on the real dataset - was reported as *"cannot compare"* rather than
+as the regression it is. The gate skipped itself at exactly the moment a
+developer had changed something. Retrieval settings are now reported as context
+above the verdict ("top_k 5 -> 3") and the numbers are compared regardless,
+which is what makes the delta readable: a regression next to a config change is
+a tuning decision to accept or revert, and the same regression with no config
+change is a bug.
+
+**Cost.** Accepting a baseline is a manual step that someone has to remember,
+and a genuine improvement looks like a regression until they do. Two baseline
+files have to be kept in step with one dataset.

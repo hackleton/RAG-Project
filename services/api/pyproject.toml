@@ -58,6 +58,12 @@ ignore = ["B008"]  # FastAPI Depends() in defaults is idiomatic
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+# Puts the project root on sys.path so `from tests.conftest import ...` works.
+# pytest 8 did this implicitly via the rootdir; pytest 9 does not, and the
+# suite stopped collecting the moment the image picked up the new major.
+# Stating it here is version-independent and does not depend on how pytest is
+# invoked - `pytest` and `python -m pytest` now behave the same.
+pythonpath = ["."]
 filterwarnings = ["error::DeprecationWarning:app.*"]
 
 [tool.mypy]

@@ -30,9 +30,10 @@ storage/
 *.db
 *.sqlite3
 
-# Evaluation output (reports are regenerated; keep datasets)
-evaluation/reports/*
-!evaluation/reports/.gitkeep
+# Evaluation output. One JSON per run adds up fast and says nothing a reviewer
+# needs. The accepted baselines are the exception: a gate compares against
+# them, so they are a committed record rather than regenerable output.
+evaluation/reports/run-*.json
 
 # OS / editor
 .DS_Store
