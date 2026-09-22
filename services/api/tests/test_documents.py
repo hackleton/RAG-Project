@@ -77,7 +77,10 @@ async def test_upload_runs_the_pipeline_and_produces_chunks(
 
     assert response.status_code == 201, response.text
     document = response.json()["document"]
-    assert document["status"] == DocumentStatus.INDEXING.value
+    # Sprint 3 carries ingestion through embedding, so a successful upload is
+    # READY - searchable - rather than stopping at INDEXING.
+    assert document["status"] == DocumentStatus.READY.value
+    assert document["indexed_at"] is not None
     assert document["chunk_count"] > 0
     assert document["size_bytes"] == len(NOTE)
     assert len(document["checksum_sha256"]) == 64
@@ -105,8 +108,9 @@ async def test_chunks_carry_the_provenance_the_plan_requires(
         assert chunk["access_level"] == "internal"
         assert chunk["token_count"] > 0
         assert chunk["chunk_metadata"]["filename"] == "note.txt"
-        # Not embedded yet - that is Sprint 3.
-        assert chunk["embedding_reference"] is None
+        # Indexed: the reference is the chunk's own id, which is also its point
+        # id in Qdrant, so the two stores agree on identity.
+        assert chunk["embedding_reference"] == chunk["id"]
 
 
 async def test_sections_are_preserved_and_not_mixed(

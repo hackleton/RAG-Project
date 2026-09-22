@@ -22,8 +22,8 @@ swapped in later as adapters rather than a rewrite — see
 | --- | --- | --- |
 | 1 | Foundation — repo, Docker, FastAPI, Next.js, SQL Server, auth, health | **Done** |
 | 2 | Document pipeline — upload, extraction, chunking, metadata | **Done** |
-| 3 | Search + RAG — embeddings, hybrid retrieval, reranking, citations | Next |
-| 4 | Agentic AI — router, RAG tool, SQL tool, synthesis | Planned |
+| 3 | Search + RAG — embeddings, hybrid retrieval, reranking, citations | **Done** |
+| 4 | Agentic AI — router, RAG tool, SQL tool, synthesis | Next |
 | 5 | Evaluation — dataset, retrieval + generation metrics, regression runs | Planned |
 | 6 | Security — RBAC depth, metadata filters, SQL restrictions, injection tests | Planned |
 | 7 | Production — Redis cache, tracing, cost/latency dashboard, CI/CD | Planned |
@@ -58,6 +58,18 @@ behaviour exists.
 - **Synthetic corpus**: 18 generated documents across 3 patients — clinical
   notes, lab reports and discharge summaries — reproducible from a fixed seed
   so the Sprint 5 evaluation set can reference specific values.
+- **Hybrid retrieval**: dense vectors (`bge-small`, 384d) and BM25 sparse
+  vectors in one Qdrant collection, fused with Reciprocal Rank Fusion and
+  reranked by a local cross-encoder. Every response carries the trace — the
+  candidates per strategy, each chunk's rank in each list, its fused score and
+  its reranker score.
+- **Grounded chat with citations**: answers cite `[n]` positions that map back
+  to real chunk ids, so a citation is verifiable rather than plausible;
+  out-of-range citations are dropped. The turn is persisted with its trace,
+  token counts, latency and cost.
+- **Access control enforced before search**: the caller's scope becomes a
+  Qdrant filter, so a chunk they may not see is never retrieved — not fetched
+  and then hidden.
 
 ## Quick start
 
@@ -74,7 +86,10 @@ docker compose run --rm api python scripts/ingest_corpus.py
 
 The last two commands generate the synthetic corpus and ingest it through the
 same service path an operator upload takes — same validation, deduplication,
-access control and audit trail.
+access control and audit trail. Ingestion embeds and indexes as it goes; the
+first run downloads the embedding model (~130MB) and the reranker (~80MB).
+
+Then sign in and open **Ask the documents**.
 
 | Service | URL |
 | --- | --- |
@@ -82,6 +97,7 @@ access control and audit trail.
 | API docs (Swagger) | http://localhost:8000/docs |
 | Liveness / readiness | http://localhost:8000/health , `/health/ready` |
 | SQL Server | `localhost:1433` |
+| Qdrant dashboard | http://localhost:6333/dashboard |
 
 `mssql-init` creates the database, the application login and the SELECT-only
 agent login on first boot; it is idempotent and re-runs harmlessly. Migrations
@@ -114,6 +130,21 @@ Re-chunk the corpus after changing `CHUNK_TARGET_TOKENS` or
 docker compose run --rm api python scripts/ingest_corpus.py --reset
 ```
 
+Rebuild only the vector index — after changing `EMBEDDING_MODEL`, or after
+changing a document's access level, since the Qdrant payload carries a copy:
+
+```bash
+docker compose run --rm api python scripts/reindex.py --all
+```
+
+Compare retrieval configurations without redeploying. `/search` returns the
+candidates and their scores with no generation, which is how the reranker bug
+in [decision 21](docs/decisions.md) was found:
+
+```bash
+curl -s -X POST localhost:8000/api/v1/search -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d '{"query":"current medications list","overrides":{"mode":"hybrid","rerank":false,"top_k":3}}'
+```
+
 Open a SQL prompt as the restricted agent login (writes should be refused):
 
 ```bash
@@ -136,7 +167,10 @@ docker compose exec mssql bash -c "/opt/mssql-tools18/bin/sqlcmd -S localhost -U
       BM25 + vector         router + tools          metrics + runs
       + RRF + rerank        (docs / SQL / KB)
            |                      |
-      Vector index          SQL Server  (SELECT-only login for the SQL tool)
+        Qdrant              SQL Server  (SELECT-only login for the SQL tool)
+   dense + sparse, one           |
+   collection, filtered     chunk text is the record;
+   before search            the index is derived
            |
    Extraction -> local file storage -> chunks + metadata -> embeddings
               (pypdf / python-docx / plain text; no OCR in v1)
@@ -148,8 +182,9 @@ Local components and what they stand in for:
 | --- | --- | --- |
 | Object storage | filesystem under `STORAGE_DIR` | Azure Blob Storage |
 | Extraction | local parsers | Azure AI Document Intelligence |
-| Embeddings | sentence-transformers | Azure OpenAI embedding deployment |
-| Keyword + vector search, fusion | BM25 + vectors + RRF in-process | Azure AI Search hybrid + RRF |
+| Embeddings | fastembed `bge-small-en-v1.5` (ONNX) | Azure OpenAI embedding deployment |
+| Keyword + vector search | Qdrant: sparse (BM25, server-side IDF) + dense | Azure AI Search hybrid |
+| Fusion | RRF in the application | Azure AI Search RRF |
 | Reranking | local cross-encoder | Azure AI Search semantic ranker |
 | Generation | Ollama, or a deterministic stub | Azure OpenAI chat deployment |
 
@@ -168,7 +203,8 @@ services/api/           FastAPI service
   app/api/              routers, dependencies, middleware
   app/providers/        storage, extraction, embedding, LLM adapters
   app/documents/        normalisation, section detection, chunking, pipeline
-  app/{rag,agents,tools,evaluation}/             later sprints
+  app/rag/              sparse BM25, fusion, retriever, indexer, prompts, chat
+  app/{agents,tools,evaluation}/                 later sprints
   alembic/              migrations
   tests/                pytest suite
 infrastructure/docker/  SQL Server bootstrap (database, logins, DENYs)
@@ -186,8 +222,12 @@ Recorded in full in [docs/decisions.md](docs/decisions.md). The short version:
 - **Chunk text lives in SQL Server, the vector index holds a copy.** The index
   can then be rebuilt without re-running extraction — which is what makes the
   chunk-size and embedding-model experiments in the plan affordable.
-- **Access control is application code, not prompt instructions.** Retrieved
-  document text is untrusted input; nothing it says can grant access.
+- **Access control is application code, not prompt instructions.** The
+  caller's scope becomes a pre-search filter, so document text that says
+  "ignore previous instructions" is never in a position to matter.
+- **Fusion is owned, not delegated.** RRF is a dozen lines, and having the
+  per-strategy inputs is what makes a ranking explainable and an experiment
+  possible.
 - **Unit tests run on SQLite, migrations are verified on SQL Server.** The suite
   stays fast enough to run constantly; `alembic check` in CI catches the drift
   that SQLite cannot see.
@@ -206,3 +246,11 @@ Recorded in full in [docs/decisions.md](docs/decisions.md). The short version:
 - Local models are weaker than the Azure deployments the plan names. The
   evaluation measures relative effects (hybrid vs vector-only, reranker on vs
   off), which survives that; absolute quality numbers do not transfer.
+- Retrieval quality is not yet *measured*, only probed by hand. The three-query
+  comparison in [decision 21](docs/decisions.md) found a real bug but is not
+  evidence about quality; that needs Sprint 5's dataset and metrics.
+- Generation defaults to the `echo` stub, which quotes retrieved context rather
+  than composing prose. Set `LLM_PROVIDER=ollama` and point
+  `OLLAMA_BASE_URL` at a running Ollama for real answers.
+- Changing a document's access level does not take effect in retrieval until
+  the vector index is rebuilt — the Qdrant payload carries a copy of it.

@@ -92,11 +92,20 @@ class NotImplementedYetError(AppError):
 
 
 def error_response(
-    status_code: int, code: str, message: str, details: dict[str, Any] | None = None
+    status_code: int,
+    code: str,
+    message: str,
+    details: dict[str, Any] | None = None,
+    request: Request | None = None,
 ) -> JSONResponse:
+    # Prefer request.state: Starlette's ServerErrorMiddleware wraps our own, so
+    # for an unhandled exception the context var has already been reset by the
+    # time this runs - and that is precisely the response whose id someone will
+    # quote in a bug report.
+    request_id = getattr(request.state, "request_id", None) if request else None
     body: dict[str, Any] = {
         "error": {"code": code, "message": message, "details": details or {}},
-        "request_id": request_id_ctx.get(),
+        "request_id": request_id or request_id_ctx.get(),
     }
     headers = {"WWW-Authenticate": "Bearer"} if status_code == 401 else None
     return JSONResponse(status_code=status_code, content=body, headers=headers)
@@ -104,35 +113,38 @@ def error_response(
 
 def register_exception_handlers(app: FastAPI) -> None:
     @app.exception_handler(AppError)
-    async def _app_error(_request: Request, exc: AppError) -> JSONResponse:
+    async def _app_error(request: Request, exc: AppError) -> JSONResponse:
         if exc.status_code >= 500:
             logger.error("app_error", code=exc.code, message=exc.message)
         else:
             logger.info("app_error", code=exc.code, message=exc.message)
-        return error_response(exc.status_code, exc.code, exc.message, exc.details)
+        return error_response(exc.status_code, exc.code, exc.message, exc.details, request)
 
     @app.exception_handler(StarletteHTTPException)
-    async def _http_error(_request: Request, exc: StarletteHTTPException) -> JSONResponse:
+    async def _http_error(request: Request, exc: StarletteHTTPException) -> JSONResponse:
         code = {401: "authentication_failed", 403: "permission_denied", 404: "not_found"}.get(
             exc.status_code, "http_error"
         )
-        return error_response(exc.status_code, code, str(exc.detail))
+        return error_response(exc.status_code, code, str(exc.detail), None, request)
 
     @app.exception_handler(RequestValidationError)
-    async def _validation_error(_request: Request, exc: RequestValidationError) -> JSONResponse:
+    async def _validation_error(request: Request, exc: RequestValidationError) -> JSONResponse:
         return error_response(
             422,
             "validation_error",
             "Request payload failed validation.",
             {"errors": exc.errors()},
+            request,
         )
 
     @app.exception_handler(Exception)
-    async def _unhandled(_request: Request, exc: Exception) -> JSONResponse:
+    async def _unhandled(request: Request, exc: Exception) -> JSONResponse:
         # exc_info goes to the log, never to the client.
         logger.exception("unhandled_exception", exc_type=type(exc).__name__)
         return error_response(
             status.HTTP_500_INTERNAL_SERVER_ERROR,
             "internal_error",
             "An unexpected error occurred.",
+            None,
+            request,
         )

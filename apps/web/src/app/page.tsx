@@ -2,16 +2,17 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 
 import { SessionGate } from "@/components/SessionGate";
-import { api, type CurrentUser, type Health } from "@/lib/api";
-import { clearToken } from "@/lib/session";
+import { api, type CurrentUser, type DocumentList, type Health } from "@/lib/api";
+import { clearToken, getToken } from "@/lib/session";
 
 const ROADMAP = [
   { sprint: "Sprint 1", title: "Foundation", state: "done" },
   { sprint: "Sprint 2", title: "Document pipeline", state: "done" },
-  { sprint: "Sprint 3", title: "Hybrid retrieval and citations", state: "next" },
-  { sprint: "Sprint 4", title: "Agentic workflow", state: "planned" },
+  { sprint: "Sprint 3", title: "Hybrid retrieval and citations", state: "done" },
+  { sprint: "Sprint 4", title: "Agentic workflow", state: "next" },
   { sprint: "Sprint 5", title: "Evaluation harness", state: "planned" },
   { sprint: "Sprint 6", title: "Security hardening", state: "planned" },
   { sprint: "Sprint 7", title: "Cache, tracing, CI/CD", state: "planned" },
@@ -24,6 +25,7 @@ export default function HomePage() {
 function Dashboard({ user }: { user: CurrentUser }) {
   const router = useRouter();
   const [health, setHealth] = useState<Health | null>(null);
+  const [documents, setDocuments] = useState<DocumentList | null>(null);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -31,6 +33,14 @@ function Dashboard({ user }: { user: CurrentUser }) {
       .health(controller.signal)
       .then(setHealth)
       .catch(() => setHealth(null));
+
+    const token = getToken();
+    if (token) {
+      api
+        .documents(token, controller.signal)
+        .then(setDocuments)
+        .catch(() => setDocuments(null));
+    }
     return () => controller.abort();
   }, []);
 
@@ -55,17 +65,33 @@ function Dashboard({ user }: { user: CurrentUser }) {
             Signed in as {user.name} · {user.email}
           </p>
         </div>
-        <button
-          onClick={signOut}
-          className="rounded-md border border-border px-3 py-1.5 text-sm"
-        >
-          Sign out
-        </button>
+        <div className="flex gap-2">
+          <Link
+            href="/chat"
+            className="rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-accent-ink"
+          >
+            Ask the documents
+          </Link>
+          <button
+            onClick={signOut}
+            className="rounded-md border border-border px-3 py-1.5 text-sm"
+          >
+            Sign out
+          </button>
+        </div>
       </header>
 
-      <section className="mt-8 grid gap-3 sm:grid-cols-3">
+      <section className="mt-8 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
         <Stat label="Role" value={user.role} />
         <Stat label="Patient scope" value={scope} />
+        <Stat
+          label="Searchable documents"
+          value={
+            documents
+              ? `${documents.items.filter((item) => item.status === "ready").length} of ${documents.total}`
+              : "—"
+          }
+        />
         <Stat
           label="API"
           value={health ? `${health.status} · v${health.version}` : "unreachable"}
@@ -102,8 +128,8 @@ function Dashboard({ user }: { user: CurrentUser }) {
           ))}
         </ol>
         <p className="mt-3 text-xs text-ink-muted">
-          Chat, retrieval and agent views land with Sprints 3 and 4. The endpoints
-          are already published in the API schema and return 501 until then.
+          The agent view lands with Sprint 4. Its endpoint is already published in
+          the API schema and returns 501 until then.
         </p>
       </section>
     </main>

@@ -45,6 +45,27 @@ services:
       mssql: { condition: service_healthy }
     restart: "no"
 
+  qdrant:
+    # Pinned to match qdrant-client's supported range - the client warns and
+    # may misbehave when the server's minor version drifts more than one.
+    image: qdrant/qdrant:v1.19.1
+    environment:
+      QDRANT__SERVICE__GRPC_PORT: 6334
+      QDRANT__LOG_LEVEL: WARN
+    ports:
+      - "${QDRANT_PORT:-6333}:6333"
+      - "${QDRANT_GRPC_PORT:-6334}:6334"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    healthcheck:
+      # The image is distroless - no curl, no shell, no wget - so the only
+      # thing that can be executed is Qdrant's own binary.
+      test: ["CMD", "/qdrant/qdrant", "--version"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
   redis:
     image: redis:7-alpine
     command: ["redis-server", "--save", "", "--appendonly", "no"]
@@ -66,6 +87,7 @@ services:
       DATABASE_URL: mssql+aioodbc://${MSSQL_APP_USER:-copilot_app}:${MSSQL_APP_PASSWORD}@mssql:1433/${MSSQL_DB:-copilot}?driver=ODBC+Driver+18+for+SQL+Server&TrustServerCertificate=yes
       READONLY_DATABASE_URL: mssql+aioodbc://${MSSQL_READONLY_USER:-copilot_readonly}:${MSSQL_READONLY_PASSWORD}@mssql:1433/${MSSQL_DB:-copilot}?driver=ODBC+Driver+18+for+SQL+Server&TrustServerCertificate=yes
       REDIS_URL: redis://redis:6379/0
+      QDRANT_URL: http://qdrant:6333
       STORAGE_DIR: /srv/.data/storage
       # Where scripts/generate_synthetic_documents.py writes the corpus.
       CORPUS_DIR: /evaluation/datasets/documents
@@ -80,6 +102,7 @@ services:
       mssql: { condition: service_healthy }
       mssql-init: { condition: service_completed_successfully }
       redis: { condition: service_healthy }
+      qdrant: { condition: service_healthy }
     # Migrations run on start so a fresh clone is one command away from working.
     command: >
       sh -c "alembic upgrade head &&
@@ -112,4 +135,5 @@ services:
 
 volumes:
   mssql_data:
+  qdrant_data:
   api_storage:

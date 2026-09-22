@@ -26,7 +26,13 @@ from app.documents.pipeline import DocumentPipeline
 from app.documents.service import DocumentService
 from app.models.enums import Role
 from app.models.user import PatientAccessGrant, User
+from app.providers.embedding import EmbeddingProvider
+from app.providers.llm import LLMProvider
 from app.providers.storage import LocalFileStore
+from app.providers.vectorstore import VectorStore
+from app.rag.indexer import Indexer
+from app.rag.retriever import HybridRetriever, RetrievalConfig
+from app.rag.service import RagService
 from app.security.principal import Principal
 from app.security.rbac import assert_role
 
@@ -109,13 +115,61 @@ def _as_uuid(value: str) -> uuid.UUID:
         raise AuthenticationError("Malformed token subject.") from exc
 
 
-def get_document_service(settings: SettingsDep) -> DocumentService:
+# The embedding model, reranker and Qdrant client are expensive to construct -
+# a model load is ~1s of CPU and a client owns a connection pool - so they live
+# on the app, built once in the lifespan, not per request. Everything cheap
+# (services, configs) is still built per request from them.
+
+
+def get_embedder(request: Request) -> EmbeddingProvider:
+    provider: EmbeddingProvider = request.app.state.embedder
+    return provider
+
+
+def get_vector_store(request: Request) -> VectorStore:
+    store: VectorStore = request.app.state.vector_store
+    return store
+
+
+def get_llm(request: Request) -> LLMProvider:
+    llm: LLMProvider = request.app.state.llm
+    return llm
+
+
+EmbedderDep = Annotated[EmbeddingProvider, Depends(get_embedder)]
+VectorStoreDep = Annotated[VectorStore, Depends(get_vector_store)]
+LLMDep = Annotated[LLMProvider, Depends(get_llm)]
+
+
+def get_retrieval_config(settings: SettingsDep) -> RetrievalConfig:
+    """The deployed retrieval defaults. A request may narrow them."""
+    return RetrievalConfig(
+        top_k=settings.retrieval_top_k,
+        candidate_pool=settings.retrieval_candidate_pool,
+        rrf_k=settings.rrf_k,
+        mode=settings.retrieval_mode,
+        rerank=settings.enable_reranker,
+        rerank_top_n=settings.rerank_top_n,
+        rerank_score_threshold=settings.rerank_score_threshold,
+    )
+
+
+RetrievalConfigDep = Annotated[RetrievalConfig, Depends(get_retrieval_config)]
+
+
+def get_indexer(store: VectorStoreDep, embedder: EmbedderDep) -> Indexer:
+    return Indexer(store=store, embedder=embedder)
+
+
+def get_document_service(
+    settings: SettingsDep, indexer: Annotated[Indexer, Depends(get_indexer)]
+) -> DocumentService:
     """Wire the document pipeline from settings.
 
     Built per request rather than as a module-level singleton so an app
-    constructed with different settings - the test suite, or a future
-    experiment run sweeping chunk sizes - gets its own configuration. The
-    objects are cheap; nothing here opens a connection or loads a model.
+    constructed with different settings - the test suite, or an experiment run
+    sweeping chunk sizes - gets its own configuration. The costly collaborators
+    come from app state; the rest is cheap to assemble.
     """
     return DocumentService(
         store=LocalFileStore(settings.storage_dir),
@@ -123,10 +177,32 @@ def get_document_service(settings: SettingsDep) -> DocumentService:
             chunking=ChunkingConfig(
                 target_tokens=settings.chunk_target_tokens,
                 overlap_tokens=settings.chunk_overlap_tokens,
-            )
+            ),
+            indexer=indexer,
         ),
         max_upload_bytes=settings.max_upload_bytes,
     )
+
+
+def get_rag_service(
+    request: Request,
+    store: VectorStoreDep,
+    embedder: EmbedderDep,
+    llm: LLMDep,
+    config: RetrievalConfigDep,
+) -> RagService:
+    return RagService(
+        retriever=HybridRetriever(
+            store=store,
+            embedder=embedder,
+            reranker=request.app.state.reranker,
+            config=config,
+        ),
+        llm=llm,
+    )
+
+
+RagServiceDep = Annotated[RagService, Depends(get_rag_service)]
 
 
 def client_ip(request: Request) -> str | None:

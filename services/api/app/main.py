@@ -19,6 +19,10 @@ from app.core.config import Settings, get_settings
 from app.core.db import dispose_engine, init_engine
 from app.core.errors import register_exception_handlers
 from app.core.logging import configure_logging, get_logger
+from app.providers.embedding import build_embedding_provider
+from app.providers.llm import build_llm_provider
+from app.providers.reranker import build_reranker
+from app.providers.vectorstore import QdrantVectorStore
 
 logger = get_logger(__name__)
 
@@ -39,17 +43,30 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     configure_logging(level=settings.log_level, fmt=settings.log_format)
 
     @asynccontextmanager
-    async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    async def lifespan(application: FastAPI) -> AsyncIterator[None]:
         init_engine(settings)
+
+        # Built once per process. The embedding model and reranker load their
+        # weights lazily on first use, so start-up stays fast and a missing
+        # model surfaces on the first query rather than blocking the boot.
+        application.state.embedder = build_embedding_provider(settings)
+        application.state.reranker = build_reranker(settings)
+        application.state.vector_store = QdrantVectorStore(settings)
+        application.state.llm = build_llm_provider(settings)
+
         logger.info(
             "api_startup",
             version=__version__,
             environment=settings.app_env.value,
             api_prefix=settings.api_prefix,
+            embedding_provider=settings.embedding_provider.value,
+            llm_provider=settings.llm_provider.value,
+            retrieval_mode=settings.retrieval_mode,
         )
         try:
             yield
         finally:
+            await application.state.vector_store.close()
             await dispose_engine()
             logger.info("api_shutdown")
 

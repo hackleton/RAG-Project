@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import time
 
-from fastapi import APIRouter, Response, status
+from fastapi import APIRouter, Request, Response, status
 from sqlalchemy import text
 
 from app import __version__
@@ -47,8 +47,13 @@ async def health(settings: SettingsDep) -> HealthResponse:
     summary="Readiness probe",
     responses={503: {"description": "One or more dependencies are unavailable."}},
 )
-async def readiness(response: Response, settings: SettingsDep) -> ReadinessResponse:
-    dependencies = {"database": await _check_database()}
+async def readiness(
+    request: Request, response: Response, settings: SettingsDep
+) -> ReadinessResponse:
+    dependencies = {
+        "database": await _check_database(),
+        "vector_store": await _check_vector_store(request),
+    }
 
     overall = "ok" if all(d.status == "ok" for d in dependencies.values()) else "error"
     if overall != "ok":
@@ -61,6 +66,16 @@ async def readiness(response: Response, settings: SettingsDep) -> ReadinessRespo
         environment=settings.app_env.value,
         dependencies=dependencies,
     )
+
+
+async def _check_vector_store(request: Request) -> DependencyHealth:
+    start = time.perf_counter()
+    store = getattr(request.app.state, "vector_store", None)
+    if store is None:
+        return DependencyHealth(status="error", detail="not initialised")
+    if not await store.health():
+        return DependencyHealth(status="error", detail="unreachable")
+    return DependencyHealth(status="ok", latency_ms=round((time.perf_counter() - start) * 1000, 2))
 
 
 async def _check_database() -> DependencyHealth:

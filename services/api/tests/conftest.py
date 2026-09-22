@@ -18,7 +18,8 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import db as db_module
-from app.core.config import AppEnv, Settings
+from app.core.config import AppEnv, EmbeddingProviderName, Settings
+from app.core.config import LLMProvider as LLMProviderName
 from app.core.security import hash_password
 from app.main import create_app
 from app.models import Base, Patient, PatientAccessGrant, Role, User
@@ -45,21 +46,34 @@ def settings(tmp_path_factory: pytest.TempPathFactory) -> Settings:
         storage_dir=tmp_path_factory.mktemp("storage"),
         # Keeps the over-the-limit test from allocating the production ceiling.
         max_upload_mb=1,
+        # Qdrant embedded in-process, deterministic embeddings and a stubbed
+        # LLM: the suite runs the real retrieval path - filters, fusion,
+        # reranking, citations - with no container and no model download.
+        qdrant_location=":memory:",
+        qdrant_collection="test-chunks",
+        embedding_provider=EmbeddingProviderName.HASH,
+        embedding_dimensions=64,
+        llm_provider=LLMProviderName.ECHO,
     )
 
 
 @pytest.fixture
 async def app(settings: Settings) -> AsyncIterator[object]:
     application = create_app(settings)
-    engine = db_module.init_engine(settings)
-    async with engine.begin() as connection:
-        await connection.run_sync(Base.metadata.create_all)
-    try:
-        yield application
-    finally:
+
+    # ASGITransport does not run lifespan events, but the lifespan is what
+    # builds the embedder, reranker, vector store and LLM. Entering it here
+    # keeps the tests on the same wiring production uses - and means a broken
+    # lifespan fails the suite rather than only failing in a container.
+    async with application.router.lifespan_context(application):
+        engine = db_module.get_engine()
         async with engine.begin() as connection:
-            await connection.run_sync(Base.metadata.drop_all)
-        await db_module.dispose_engine()
+            await connection.run_sync(Base.metadata.create_all)
+        try:
+            yield application
+        finally:
+            async with engine.begin() as connection:
+                await connection.run_sync(Base.metadata.drop_all)
 
 
 @pytest.fixture

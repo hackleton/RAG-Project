@@ -11,6 +11,7 @@ const BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000"
 const PREFIX = process.env.NEXT_PUBLIC_API_PREFIX ?? "/api/v1";
 
 export type Role = "admin" | "clinician" | "analyst";
+export type RetrievalMode = "hybrid" | "dense" | "sparse";
 
 export interface TokenResponse {
   access_token: string;
@@ -41,6 +42,92 @@ export interface Health {
   version: string;
   environment: string;
   dependencies?: Record<string, DependencyHealth>;
+}
+
+export interface DocumentSummary {
+  id: string;
+  filename: string;
+  document_type: string;
+  status: string;
+  chunk_count: number;
+  page_count: number | null;
+  access_level: string;
+}
+
+export interface DocumentList {
+  items: DocumentSummary[];
+  total: number;
+}
+
+export interface Source {
+  chunk_id: string;
+  document_id: string;
+  filename: string;
+  document_type: string;
+  section: string | null;
+  page_number: number | null;
+  chunk_index: number;
+  text: string;
+  access_level: string;
+  fused_score: number;
+  rerank_score: number | null;
+  /** Rank per strategy, e.g. { dense: 3, sparse: 11 }. */
+  ranks: Record<string, number>;
+  scores: Record<string, number>;
+}
+
+export interface Citation {
+  number: number;
+  chunk_id: string;
+  document_id: string;
+  filename: string;
+  section: string | null;
+  page_number: number | null;
+  excerpt: string;
+  score: number | null;
+}
+
+export interface RetrievalTrace {
+  mode: RetrievalMode;
+  candidates: Record<string, number>;
+  fused_candidates: number;
+  returned: number;
+  reranker: string;
+  top_k: number;
+  rrf_k: number;
+  timings_ms: Record<string, number>;
+  model?: string;
+}
+
+export interface ChatUsage {
+  prompt_tokens: number | null;
+  completion_tokens: number | null;
+  latency_ms: number;
+  estimated_cost_usd: number | null;
+}
+
+export interface ChatAnswer {
+  session_id: string;
+  message_id: string;
+  answer: string;
+  citations: Citation[];
+  sources: Source[];
+  trace: RetrievalTrace;
+  usage: ChatUsage;
+}
+
+export interface SearchAnswer {
+  query: string;
+  results: Source[];
+  trace: RetrievalTrace;
+}
+
+export interface RetrievalOverrides {
+  top_k?: number;
+  candidate_pool?: number;
+  rrf_k?: number;
+  mode?: RetrievalMode;
+  rerank?: boolean;
 }
 
 interface ErrorEnvelope {
@@ -118,4 +205,28 @@ export const api = {
 
   me: (token: string, signal?: AbortSignal) =>
     request<CurrentUser>("/auth/me", { token, signal }),
+
+  documents: (token: string, signal?: AbortSignal) =>
+    request<DocumentList>("/documents?limit=100", { token, signal }),
+
+  chat: (
+    token: string,
+    body: {
+      question: string;
+      session_id?: string | null;
+      patient_external_id?: string | null;
+      overrides?: RetrievalOverrides;
+    },
+    signal?: AbortSignal,
+  ) => request<ChatAnswer>("/chat", { method: "POST", token, body, signal }),
+
+  search: (
+    token: string,
+    body: {
+      query: string;
+      patient_external_id?: string | null;
+      overrides?: RetrievalOverrides;
+    },
+    signal?: AbortSignal,
+  ) => request<SearchAnswer>("/search", { method: "POST", token, body, signal }),
 };

@@ -36,9 +36,16 @@ class AppEnv(StrEnum):
 
 class LLMProvider(StrEnum):
     OLLAMA = "ollama"
-    # Deterministic stub: echoes the grounded context without a model. Keeps
-    # the pipeline end-to-end testable in CI, where no LLM is available.
+    # Deterministic stub: composes an answer from the retrieved context without
+    # a model. Keeps the pipeline end-to-end testable in CI, where no LLM runs.
     ECHO = "echo"
+
+
+class EmbeddingProviderName(StrEnum):
+    FASTEMBED = "fastembed"
+    # Deterministic hashed embeddings. No model download, so the test suite and
+    # CI exercise the real retrieval path without a 130MB dependency.
+    HASH = "hash"
 
 
 def _split_csv(value: object) -> object:
@@ -104,14 +111,26 @@ class Settings(BaseSettings):
     database_echo: bool = False
     redis_url: str = "redis://localhost:6379/0"
 
+    # --- Vector store (stands in for the Azure AI Search index) ----------
+    qdrant_url: AnyHttpUrl = AnyHttpUrl("http://localhost:6333")
+    qdrant_api_key: OptionalStr = None
+    qdrant_collection: str = "healthcare-chunks"
+    # Set to ":memory:" to run Qdrant embedded in-process. The test suite
+    # uses it: named dense + sparse vectors, the IDF modifier and payload
+    # filters all behave as they do against the server, so the suite covers
+    # the real retrieval path without a container.
+    qdrant_location: OptionalStr = None
+    qdrant_timeout_seconds: float = 15.0
+
     # --- Local document storage (stands in for Azure Blob Storage) --------
     storage_dir: Path = Path("./.data/storage")
     max_upload_mb: int = 25
 
     # --- Local models (stand in for Azure OpenAI / AI Search reranker) -----
+    embedding_provider: EmbeddingProviderName = EmbeddingProviderName.FASTEMBED
     embedding_model: str = "BAAI/bge-small-en-v1.5"
     embedding_dimensions: int = 384
-    reranker_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+    reranker_model: str = "Xenova/ms-marco-MiniLM-L-6-v2"
     model_cache_dir: Path = Path("./.data/models")
 
     # --- Local LLM (stands in for an Azure OpenAI chat deployment) --------
@@ -130,6 +149,14 @@ class Settings(BaseSettings):
     retrieval_candidate_pool: int = 50
     rrf_k: int = 60
     enable_reranker: bool = True
+    # How many fused candidates the cross-encoder scores. It is the
+    # dominant cost in a request, and linear in this number.
+    rerank_top_n: int = 30
+    # Retrieval strategy, so the section 14 experiment 'vector-only vs
+    # hybrid' is a configuration change rather than a code change.
+    retrieval_mode: Literal["hybrid", "dense", "sparse"] = "hybrid"
+    # Discard candidates the reranker scores below this. None = keep all.
+    rerank_score_threshold: float | None = None
 
     # --- Auth ------------------------------------------------------------
     jwt_secret_key: str = DEV_JWT_SECRET

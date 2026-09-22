@@ -6,8 +6,10 @@ Status is written to the `documents` row at each stage, so a failure leaves a
 document in a state that says where it stopped rather than just "failed". That
 is the difference between "the PDF was a scan" and "something went wrong".
 
-Sprint 3 appends embedding and indexing to the end of this same pipeline; the
-`INDEXING` and `READY` statuses already exist for it.
+Indexing is the last step and the only one that can be skipped: a pipeline
+built without an `Indexer` stops at `INDEXING`, which is what the chunking
+tests use. Everything before it writes to SQL Server, the record; the vector
+index is derived and rebuildable from it.
 
 **Threat model note.** Everything produced here is untrusted input. A document
 can contain text that looks like an instruction ("ignore previous instructions
@@ -34,6 +36,7 @@ from app.documents.normalization import normalise_blocks
 from app.models.document import Document, DocumentChunk
 from app.models.enums import DocumentStatus
 from app.providers.extraction import ExtractedDocument, ExtractionError, ExtractorRegistry
+from app.rag.indexer import Indexer
 
 logger = get_logger(__name__)
 
@@ -61,9 +64,11 @@ class DocumentPipeline:
         *,
         extractors: ExtractorRegistry | None = None,
         chunking: ChunkingConfig | None = None,
+        indexer: Indexer | None = None,
     ) -> None:
         self._extractors = extractors or ExtractorRegistry()
         self._chunking = chunking or ChunkingConfig()
+        self._indexer = indexer
 
     async def run(self, session: AsyncSession, document: Document, data: bytes) -> IngestionResult:
         log = logger.bind(document_id=str(document.id), filename=document.filename)
@@ -124,14 +129,25 @@ class DocumentPipeline:
             )
 
         document.chunk_count = len(chunks)
-        # Chunked but not yet embedded. Sprint 3 moves this on to READY.
         document.status = DocumentStatus.INDEXING
-        document.status_detail = (
-            "Chunked and awaiting embedding (Sprint 3)."
-            if not extracted.warnings
-            else "; ".join(extracted.warnings)
-        )
+        document.status_detail = "; ".join(extracted.warnings) or None
         await session.flush()
+
+        if self._indexer is not None:
+            try:
+                await self._indexer.index_document(session, document)
+            except Exception as exc:  # noqa: BLE001 - the chunks are already safe
+                # The document stays at INDEXING with a reason, and `reindex.py`
+                # can pick it up. Failing the whole upload here would discard
+                # extraction and chunking work over a vector-store outage.
+                document.status_detail = f"Indexing failed: {type(exc).__name__}"
+                logger.error(
+                    "indexing_failed",
+                    document_id=str(document.id),
+                    error=str(exc),
+                    exc_type=type(exc).__name__,
+                )
+                await session.flush()
 
         log.info(
             "document_ingested",

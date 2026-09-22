@@ -316,3 +316,136 @@ hypothesis, not a settled fact, and it is precisely the kind of thing the
 experiments in plan section 14 exist to decide: the comparison to run is
 section-strict chunking against one that merges adjacent short sections up to
 the target size.
+
+---
+
+## 17. Qdrant as the vector store
+
+**Decision.** A Qdrant container holds one collection with two named vectors per
+chunk: `dense` (cosine) and `sparse` (BM25 term weights).
+
+**Why not the alternatives.** An in-process index over numpy is fine at 123
+chunks and becomes the system's limiting factor well before the corpus is
+interesting; more importantly it has no pre-filtering, which is the property the
+access control depends on (entry 20). SQL Server 2022 has no vector type at all,
+so a single-store design was not available. Qdrant gives native sparse vectors
+with server-side IDF, payload filters applied before nearest-neighbour
+selection, and a data model close enough to Azure AI Search that the eventual
+swap is an adapter.
+
+**Cost.** A third stateful service, and a second place chunk data lives - so
+`reindex.py` exists to rebuild it from SQL Server, and retrieval hydrates its
+results from SQL Server rather than trusting the index payload.
+
+---
+
+## 18. RRF is implemented here, not delegated to Qdrant's fusion query
+
+**Decision.** Two searches are issued and fused in `app/rag/fusion.py`, rather
+than using Qdrant's `prefetch` + `FusionQuery`.
+
+**Why.** Project plan section 14 compares vector-only against hybrid, and
+section 15 requires a retrieval trace. Both need the per-strategy result lists
+*before* fusion - which rank each chunk held in each list, and its raw score
+there. Qdrant's native fusion returns only the merged output. RRF is a dozen
+lines, so owning it costs little and buys the `/search` endpoint its ability to
+explain a ranking.
+
+**Why rank and not score.** Cosine sits in roughly [0, 1]; BM25 is unbounded and
+corpus-dependent. Combining the magnitudes lets the keyword side quietly
+dominate, and the balance shifts as the corpus grows. RRF discards magnitude and
+keeps ordering, which needs no per-corpus normalisation constant - and any such
+constant would itself need tuning and re-tuning.
+
+---
+
+## 19. BM25 is split between this codebase and Qdrant
+
+**Decision.** `app/rag/sparse.py` computes the term-frequency half of BM25;
+Qdrant's `modifier: idf` on the sparse vector supplies the IDF at query time.
+
+**Why split it.** IDF is a corpus statistic. Computing it locally would mean
+every newly indexed document invalidated the stored weights of every existing
+one. Qdrant maintains it as documents arrive, so the two halves compose to real
+BM25 without a global re-index on every write.
+
+**Why hand-written.** fastembed's `Qdrant/bm25` needs a model download, which
+would mean CI could not exercise the keyword path at all. Sixty lines with the
+saturation and length-normalisation terms spelled out is also a better answer to
+"how does your keyword scorer work" than a library name.
+
+---
+
+## 20. Access control is a pre-search filter, never a post-filter
+
+**Decision.** The caller's patient scope and sensitivity become a Qdrant
+`Filter` evaluated by the engine before nearest neighbours are chosen. Retrieval
+builds it from the `Principal`, never from anything in the request body.
+
+**Why.** Two reasons, and the second is the one that matters.
+
+1. Post-filtering silently destroys recall: ask for five, discard three, get
+   two, with no signal that anything was dropped.
+2. A chunk the caller may not see is never retrieved *at all*. With a
+   post-filter the text has already been fetched into the process and is one
+   bug - a logging line, an error path, a future refactor - away from the
+   prompt. This is what makes the injection tests pass for a structural reason
+   rather than a hopeful one: no prompt wording is involved.
+
+**Cost.** The Qdrant payload duplicates `patient_id` and `access_level` from SQL
+Server, so changing a document's access level requires a reindex to take effect
+in retrieval. `reindex.py` is the remedy and the README says so.
+
+---
+
+## 21. The reranker was measured, and measuring it found a bug
+
+**Decision.** `ENABLE_RERANKER` is configuration and `NoopReranker` is a real
+implementation, so the A/B is a settings change. Project plan section 2 is
+explicit that the reranker must not be assumed to help.
+
+**What the measurement found.** With the reranker on, two of three probe queries
+got *worse* answers - "current medications list" returned Hospital Course
+instead of CURRENT MEDICATIONS, and "what was the discharge diagnosis" returned
+Follow-Up instead of Discharge Diagnosis - at 10-20x the latency.
+
+The cause was not the reranker. The indexer prefixes each chunk with its section
+heading before embedding, because a chunk reading only "7.4% (reference
+4.0-5.6%)" is meaningless alone. The reranker was being handed the *bare* chunk
+text. The two stages therefore disagreed about what a chunk was, and the
+cross-encoder was scoring fragments stripped of the signal the query was asking
+for. With the inputs aligned, the reranker matches or beats no-rerank on every
+probe.
+
+**The lesson worth keeping.** The A/B did not just tune a parameter, it
+localised a defect - and the defect was invisible without the `/search`
+endpoint's per-strategy trace. That is the argument for building the measurement
+surface before the thing being measured.
+
+**Standing cost.** Even correct, the cross-encoder is 5-15x the latency of
+skipping it (roughly 400ms-1.1s against 50-110ms here). `RERANK_TOP_N` bounds
+how many candidates it scores, since cost is linear in that number. Whether the
+quality is worth the latency is a Sprint 5 question with a proper dataset, not
+three hand-picked queries.
+
+---
+
+## 22. The deterministic providers are configuration, not test doubles
+
+**Decision.** `EMBEDDING_PROVIDER=hash` and `LLM_PROVIDER=echo` are selectable
+providers alongside fastembed and Ollama, not mocks living in the test suite.
+
+**Why.** It means the test suite and CI run the *real* retrieval path - Qdrant
+(embedded in-process), pre-search filters, two searches, RRF, reranking,
+hydration, citation parsing, persistence - with no model download and no GPU.
+149 tests run in about 25 seconds. The only thing not covered is embedding and
+generation quality, which unit tests cannot assert anyway and which Sprint 5's
+evaluation set exists to measure.
+
+It also removes the model as a source of variance when measuring retrieval:
+comparing chunk sizes is cleaner when generation is deterministic.
+
+**Cost.** Hashed embeddings are lexical, not semantic, so a test cannot assert
+that a paraphrase retrieves the right chunk. Tests assert plumbing and access
+control; quality is measured against the real models, by hand today and by the
+harness from Sprint 5.

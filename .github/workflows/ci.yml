@@ -57,7 +57,7 @@ jobs:
       - name: Boot SQL Server and the API
         run: |
           cp .env.example .env
-          docker compose up -d --build mssql redis
+          docker compose up -d --build mssql redis qdrant
           docker compose up mssql-init
 
       - name: Upgrade, downgrade, upgrade
@@ -101,12 +101,21 @@ jobs:
             exit 1
           fi
 
-      - name: Corpus ingests, and re-ingesting is a no-op
+      # EMBEDDING_PROVIDER=hash keeps CI off the model download while still
+      # exercising Qdrant, the pre-search filters, fusion and hydration.
+      - name: Corpus ingests, indexes, and re-ingesting is a no-op
         run: |
+          echo "EMBEDDING_PROVIDER=hash" >> .env
           docker compose run --rm api python scripts/ingest_corpus.py | tee /tmp/first.log
           grep -q "18 document" /tmp/first.log
+          grep -q "123 chunk" /tmp/first.log
           docker compose run --rm api python scripts/ingest_corpus.py | tee /tmp/second.log
           grep -q "deduplicated" /tmp/second.log
+
+      - name: The index can be rebuilt from the database
+        run: |
+          docker compose run --rm api python scripts/reindex.py --all | tee /tmp/reindex.log
+          grep -q "123 points in the collection" /tmp/reindex.log
 
       - name: API boots and answers
         run: |
@@ -135,6 +144,12 @@ jobs:
           code=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
             http://localhost:8000/api/v1/evaluations/run -H "Authorization: Bearer $TOKEN")
           test "$code" = "403" || { echo "expected 403, got $code"; exit 1; }
+
+      # Asserts that answers are grounded and cited, and that an analyst
+      # retrieves nothing at all for an injection-shaped question - the
+      # pre-search filter, checked over HTTP against the real stack.
+      - name: Retrieval is grounded, cited and scoped
+        run: docker compose run --rm api python scripts/smoke_retrieval.py
 
       - name: Dump logs on failure
         if: failure()
