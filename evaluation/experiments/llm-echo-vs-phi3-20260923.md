@@ -104,4 +104,106 @@ changed invites the wrong reading.
 **Next measurement worth taking:** the LLM judge, against phi3, on the cases
 where `fact_coverage` scores zero but the answer looks right. That is the
 cheapest way to find out how much of the 0.340 is the model and how much is the
-grader.
+grader. *(Taken — see the addendum below.)*
+
+## Addendum: the judged run, and what it corrected
+
+A second run with `--judge`, which scores every answered case with a second
+call to the same model.
+
+| | phi3, deterministic grading | phi3, judged |
+| --- | --- | --- |
+| fact_coverage | 0.3404 | 0.3511 |
+| citation_precision | 0.7147 | 0.7354 |
+| unsupported_number_rate | 0.0748 | 0.0935 |
+| hallucinated_citation_rate | 0.0000 | 0.0093 |
+| fabricated_source_rate | 0.0467 | 0.0467 |
+| judge_faithfulness | — | 0.4320 |
+| judge_relevance | — | 0.6770 |
+| judged_cases | — | 100 |
+
+**The judge broadly agrees with the deterministic grader, which is the useful
+part.** `fact_coverage` 0.35 and `judge_faithfulness` 0.43 are different
+measurements of different things, but they point the same way: the answers
+really are weak, and the low coverage is not simply the token-run matcher
+punishing paraphrase. That was the open question the judge was run to settle,
+and it settles it in the less comfortable direction.
+
+It settles it only weakly, though, and the reason is worth stating: this is
+phi3 grading phi3. A model marking its own homework with the same 3.8B
+parameters that produced the answer is the cheapest possible judge and the
+least independent one. `judge_relevance` 0.677 against `judge_faithfulness`
+0.432 is the sort of split that could be real or could be the model finding
+"was this on topic?" easier than "is this supported?". Neither number should
+leave this file without that caveat attached, and neither is gated.
+
+**The same two numbers moved between two runs of the same configuration at
+temperature 0.** `unsupported_number_rate` went 0.0748 → 0.0935 and
+`hallucinated_citation_rate` 0.0000 → 0.0093 with nothing changed but the
+presence of a second LLM call per case. Local inference is not bit-reproducible
+across batching and context differences, so generation metrics carry run-to-run
+variance that the retrieval metrics — identical to four decimal places across
+every run here — simply do not. That is the strongest argument yet for decision
+34's choice of what to gate: a build that failed on a generation metric would
+fail on noise.
+
+## The correction this run forced
+
+The judged run reported `out_of_scope_identifier_cases: 4`, up from 0. That is
+a **security** metric, so it was chased before anything else.
+
+All four cases had `out_of_scope_sources: []` — no document outside the
+caller's scope was retrieved, so the pre-search filter had done its job
+exactly. What the model had done was name patients it was never shown:
+`SYN-0003` for a clinician granted `SYN-0001` and `SYN-0002`, and — decisively
+— **`SYN-0004`, which does not exist anywhere in the corpus.**
+
+So the metric was counting hallucination as containment failure. That is the
+same category error decision 33 fixed for refusal, in the opposite direction:
+there, a generation behaviour was being read as a security guarantee; here, a
+generation failure was being read as a security breach.
+
+The fix follows the same rule. An out-of-scope identifier is a **disclosure**
+only if it appears in the context the model was handed — something had to be
+there for it to leak. An identifier absent from that context was invented, and
+inventing one tells the caller nothing they could not have guessed.
+`out_of_scope_identifier_cases` now counts only the former and stays in the
+security block; `fabricated_identifier_rate` counts the latter and sits with
+the generation metrics, where it cannot be mistaken for a containment rate.
+
+This matters more than the number does. A security metric that fires on
+hallucination is a metric people learn to ignore, and that is the mechanism by
+which a real breach gets missed later.
+
+### After the fix
+
+A clean re-run on the corrected metric:
+
+```
+  Security
+    injection_blocked_rate         1.0000
+    access_contained_rate          1.0000
+    out_of_scope_source_cases      0
+    out_of_scope_identifier_cases  0        (was 4)
+  Generation
+    fabricated_identifier_rate     0.0187   (new - where the 4 actually belonged)
+    fabricated_source_rate         0.0280
+```
+
+Pass rate moved 85.0% → 86.0%, because a case is no longer failed outright for
+an identifier the model invented. The security block now says something narrow
+and true: nothing outside the caller's scope was retrieved, and nothing
+outside it was disclosed. What the model made up is counted next to the other
+things it made up.
+
+The run also exercised the new reporting, which is what a reader now sees above
+the verdict:
+
+```
+Generation model differs from evaluation/reports/baseline.json:
+  llm_provider 'echo' -> 'ollama'
+  llm_model 'llama3.1:8b' -> 'phi3:latest'
+  Retrieval and security still compare; generation metrics do not.
+
+No regression against evaluation/reports/baseline.json.
+```

@@ -343,10 +343,23 @@ Recorded in full in [docs/decisions.md](docs/decisions.md). The short version:
   patient-scoped retrieval saturates Recall@5 at 1.000. The `hard` tier is
   unscoped precisely so the metric has somewhere to fall
   ([decision 31](docs/decisions.md)); the aggregate still mixes both regimes.
-- Generation metrics run against the `echo` stub by default, so they measure
-  the stub. They are reported but deliberately not gated
-  ([decision 33](docs/decisions.md)) — `refusal_rate_when_unanswerable` reads
-  0.0 for exactly this reason, and would need a real model to mean anything.
+- Generation metrics run against the `echo` stub by default, so by default they
+  measure the stub. They are reported but deliberately not gated
+  ([decision 33](docs/decisions.md)). Set `LLM_PROVIDER=ollama` for real
+  numbers: measured against `phi3:latest`, `refusal_rate_when_unanswerable`
+  moves 0.0 → 0.286, `citation_precision` 0.277 → 0.715 and
+  `unsupported_number_rate` 0.000 → 0.075, while every retrieval metric stays
+  identical to four decimal places. Full comparison in
+  [evaluation/experiments](evaluation/experiments/llm-echo-vs-phi3-20260923.md).
+- **`fact_coverage` understates answer quality against a real model.** Key
+  facts are matched as contiguous token runs, which a stub that quotes its
+  context verbatim passes trivially and a model that paraphrases fails even
+  when correct. Treat 0.34 as a floor, not an estimate — the LLM judge
+  (`--judge`) exists for this and is opt-in.
+- **Local generation is slow.** p95 goes from 1.6 s on the stub to 31.7 s on
+  `phi3:latest`, worst case 84 s, on CPU. Nothing architectural; it is what a
+  3.8B model costs on this machine, and it is why `echo` stays the default for
+  CI and the test suite.
 - The baseline is per-configuration. CI runs hashed embeddings and compares
   against `baseline-hash.json`; a local run on `bge-small` compares against
   `baseline.json`. Comparing across the two is refused rather than reported as

@@ -413,3 +413,35 @@ def test_role_enum_covers_every_persona_the_dataset_can_name() -> None:
     role model does not have at all is a dataset bug worth catching early."""
     personas = {"admin", "clinician", "analyst"}
     assert personas == {role.value for role in Role}
+
+
+# --- disclosure is not the same event as fabrication ------------------------
+
+
+async def test_an_invented_identifier_is_not_scored_as_a_disclosure(
+    session: AsyncSession,
+    rag: RagService,
+    dataset: Dataset,
+    users: dict[str, User],
+    corpus: list[str],
+) -> None:
+    """The bug this guards, found by running a real model.
+
+    phi3 answered four cases by naming patients it had never been shown -
+    including `SYN-0004`, which does not exist in the corpus at all. Counting
+    that as a containment failure is wrong twice over: the pre-search filter
+    had done its job (no out-of-scope document was retrieved), and a metric
+    that fires on hallucination is a metric people learn to ignore, which is
+    how a real breach gets missed.
+    """
+    run = await run_dataset(session, rag, dataset)
+    metrics = dict(run.metrics)
+
+    # No out-of-scope document reached any answer, so no identifier can have
+    # been disclosed - whatever the model chose to write.
+    assert metrics["security"]["out_of_scope_source_cases"] == 0
+    assert metrics["security"]["out_of_scope_identifier_cases"] == 0
+    # And the fabrication counter lives with the generation metrics, where it
+    # cannot be mistaken for a containment rate.
+    assert "fabricated_identifier_rate" in metrics["generation"]
+    assert "fabricated_identifier_rate" not in metrics["security"]

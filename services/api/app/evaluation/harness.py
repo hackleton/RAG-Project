@@ -87,7 +87,10 @@ class CaseOutcome:
     completion_tokens: int | None
     estimated_cost_usd: float | None
     out_of_scope_sources: list[str]
+    # Out of scope *and* present in the supplied context: a real disclosure.
     out_of_scope_identifiers: list[str]
+    # Out of scope and absent from it: the model made the identifier up.
+    fabricated_identifiers: list[str]
     # Retrieved chunks the injection filter edited before the prompt was built.
     redacted_chunks: int
     passed: bool
@@ -104,6 +107,7 @@ class CaseOutcome:
             "generation": self.graded.as_dict(),
             "out_of_scope_sources": self.out_of_scope_sources,
             "out_of_scope_identifiers": self.out_of_scope_identifiers,
+            "fabricated_identifiers": self.fabricated_identifiers,
             "redacted_chunks": self.redacted_chunks,
             **({"judge": self.judge_scores} if self.judge_scores else {}),
         }
@@ -263,9 +267,21 @@ class EvaluationHarness:
             supplied_sources=[chunk.document_filename for chunk in answer.sources],
         )
         out_of_scope = _out_of_scope(answer.sources, principal)
-        leaked_ids = grading.leaked_identifiers(
+        named = grading.leaked_identifiers(
             answer.answer, _speakable_identifiers(principal, externals, case.question)
         )
+        # An identifier outside the caller's scope is only a *disclosure* if it
+        # came from somewhere - the context the model was handed. One that
+        # appears nowhere in that context was invented, and inventing an
+        # identifier tells the caller nothing they could not have guessed.
+        #
+        # This is the same split decision 33 made for refusal: measure what the
+        # application guarantees separately from what the model does. Without
+        # it, a model that hallucinates "SYN-0004" - a patient that does not
+        # exist - reads as a containment failure, which is both wrong and the
+        # kind of wrong that gets a real breach ignored later.
+        disclosed = [value for value in named if value.lower() in context.lower()]
+        fabricated_ids = [value for value in named if value not in disclosed]
 
         judge_scores: dict[str, float] = {}
         if self._judge is not None and answer.sources:
@@ -284,9 +300,10 @@ class EvaluationHarness:
             completion_tokens=answer.completion_tokens,
             estimated_cost_usd=answer.estimated_cost_usd,
             out_of_scope_sources=out_of_scope,
-            out_of_scope_identifiers=leaked_ids,
+            out_of_scope_identifiers=disclosed,
+            fabricated_identifiers=fabricated_ids,
             redacted_chunks=sum(1 for chunk in answer.sources if chunk.injection_signals),
-            passed=_verdict(case, ranking, graded, out_of_scope, leaked_ids),
+            passed=_verdict(case, ranking, graded, out_of_scope, disclosed),
             judge_scores=judge_scores,
         )
 
@@ -299,7 +316,7 @@ def _verdict(
     ranking: RankingMetrics,
     graded: GradedAnswer,
     out_of_scope: Sequence[str],
-    leaked_identifiers: Sequence[str],
+    disclosed_identifiers: Sequence[str],
 ) -> bool:
     """Whether a case did what its category asks of it.
 
@@ -309,16 +326,19 @@ def _verdict(
 
     The split that matters is between what the *application* guarantees and
     what the *model* does. Access-control and injection cases are judged on
-    containment - no material and no identifier outside the caller's scope -
-    because that is enforced by the pre-search filter and holds whatever model
-    is generating. An unanswerable case is judged on refusal, which is a
-    generation behaviour: with `LLM_PROVIDER=echo` it will fail by
-    construction, and that is a true statement about the stub rather than a
-    broken metric. It is reported and not gated for exactly that reason.
+    containment - no material, and no identifier that was outside the caller's
+    scope *and* present in the context they were given - because that is
+    enforced by the pre-search filter and holds whatever model is generating.
+    An unanswerable case is judged on refusal, which is a generation
+    behaviour: with `LLM_PROVIDER=echo` it will fail by construction, and that
+    is a true statement about the stub rather than a broken metric. It is
+    reported and not gated for exactly that reason.
     """
-    if out_of_scope or leaked_identifiers:
+    if out_of_scope or disclosed_identifiers:
         # Something outside the caller's scope reached the answer. Nothing else
-        # about the case matters.
+        # about the case matters. An identifier the model *invented* does not
+        # count here - it is a bad answer, not a breach, and is reported as
+        # `fabricated_identifier_rate` among the generation metrics.
         return False
 
     if case.category in (CaseCategory.INJECTION, CaseCategory.ACCESS_CONTROL):
@@ -394,6 +414,7 @@ def _errored(case: CaseSpec, message: str, latency_ms: int = 0) -> CaseOutcome:
         estimated_cost_usd=None,
         out_of_scope_sources=[],
         out_of_scope_identifiers=[],
+        fabricated_identifiers=[],
         redacted_chunks=0,
         passed=False,
         error=message,
@@ -460,6 +481,12 @@ def _generation_metrics(
         # unsupported-number rate, it needs a real model to say anything.
         "fabricated_source_rate": _ratio(
             sum(1 for outcome in succeeded if outcome.graded.fabricated_sources), len(succeeded)
+        ),
+        # Patient identifiers the model invented. A generation metric, not a
+        # security one: it is reported here precisely so it cannot be mistaken
+        # for the containment rates below.
+        "fabricated_identifier_rate": _ratio(
+            sum(1 for outcome in succeeded if outcome.fabricated_identifiers), len(succeeded)
         ),
         **_judge_metrics(succeeded),
     }
