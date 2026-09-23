@@ -268,6 +268,31 @@ def retrieval_changes(baseline: dict[str, Any], config: dict[str, Any]) -> list[
     ]
 
 
+# Settings that change how answers are *written* rather than what is retrieved.
+# Deliberately not in COMPARABLE_KEYS, for the same reason the retrieval config
+# is not: every gated metric is either retrieval (upstream of the model) or
+# containment (guaranteed by the access filter whatever writes the answer), so
+# swapping models must not make the gate skip itself. It must make the reader
+# read the generation numbers differently, which is what this is for.
+GENERATION_KEYS: tuple[str, ...] = ("llm_provider", "llm_model")
+
+
+def generation_changes(baseline: dict[str, Any], config: dict[str, Any]) -> list[str]:
+    """Model differences from the baseline's - context, not a verdict.
+
+    Without this a run can report "no regression" while every generation metric
+    in it was produced by a different model. The gated metrics really are
+    unaffected, so the verdict is honest; the numbers underneath it are not
+    comparable, and silence implied they were.
+    """
+    recorded = baseline.get("config", {})
+    return [
+        f"{key} {recorded.get(key)!r} -> {config[key]!r}"
+        for key in GENERATION_KEYS
+        if key in config and recorded.get(key) != config[key]
+    ]
+
+
 def load_baseline(path: Path) -> dict[str, Any] | None:
     if not path.is_file():
         return None

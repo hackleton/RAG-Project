@@ -33,6 +33,7 @@ from app.evaluation.dataset import Dataset, load_dataset, sync_cases
 from app.evaluation.experiments import (
     check_regression,
     environment_payload,
+    generation_changes,
     incomparable,
     load_baseline,
     retrieval_changes,
@@ -203,6 +204,17 @@ def main() -> int:
         print(f"\nRetrieval settings differ from {arguments.baseline}:")
         for change in changed:
             print(f"  {change}")
+
+    generation = generation_changes(baseline, environment)
+    if generation:
+        # The gated metrics are all upstream of the model, or guaranteed by the
+        # access filter whatever writes the answer, so the verdict below still
+        # holds. The generation block above it does not compare across models,
+        # and saying nothing implied that it did.
+        print(f"\nGeneration model differs from {arguments.baseline}:")
+        for change in generation:
+            print(f"  {change}")
+        print("  Retrieval and security still compare; generation metrics do not.")
 
     violations = check_regression(metrics, baseline)
     if not violations:

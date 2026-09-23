@@ -260,6 +260,7 @@ class EvaluationHarness:
             cited_sources=cited,
             context=context,
             supplied_blocks=len(answer.sources),
+            supplied_sources=[chunk.document_filename for chunk in answer.sources],
         )
         out_of_scope = _out_of_scope(answer.sources, principal)
         leaked_ids = grading.leaked_identifiers(
@@ -453,6 +454,12 @@ def _generation_metrics(
         ),
         "unsupported_number_rate": _ratio(
             sum(1 for outcome in succeeded if not outcome.graded.faithful), len(succeeded)
+        ),
+        # Answers naming a document they were never given. Structurally zero
+        # against the echo stub, which only ever repeats its context - like the
+        # unsupported-number rate, it needs a real model to say anything.
+        "fabricated_source_rate": _ratio(
+            sum(1 for outcome in succeeded if outcome.graded.fabricated_sources), len(succeeded)
         ),
         **_judge_metrics(succeeded),
     }

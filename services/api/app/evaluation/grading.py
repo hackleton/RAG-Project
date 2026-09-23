@@ -83,6 +83,7 @@ class GradedAnswer:
     cited_expected_source: bool
     hallucinated_citations: int
     unsupported_numbers: list[str]
+    fabricated_sources: list[str]
     faithful: bool
     refused: bool
     leaked: bool
@@ -96,6 +97,7 @@ class GradedAnswer:
             "cited_expected_source": self.cited_expected_source,
             "hallucinated_citations": self.hallucinated_citations,
             "unsupported_numbers": self.unsupported_numbers,
+            "fabricated_sources": self.fabricated_sources,
             "faithful": self.faithful,
             "refused": self.refused,
             "leaked": self.leaked,
@@ -110,6 +112,7 @@ def grade(
     cited_sources: Sequence[SourceRef],
     context: str,
     supplied_blocks: int,
+    supplied_sources: Sequence[str] = (),
 ) -> GradedAnswer:
     """Grade one answer against its case and the context it was given.
 
@@ -121,6 +124,7 @@ def grade(
     found, missing = _fact_coverage(answer, expected_facts)
     relevant = [any(want.matches(got) for want in expected_sources) for got in cited_sources]
     unsupported = unsupported_numbers(answer, context)
+    invented = fabricated_sources(answer, supplied_sources)
 
     return GradedAnswer(
         fact_coverage=round(len(found) / len(expected_facts), 4) if expected_facts else 1.0,
@@ -131,6 +135,10 @@ def grade(
         cited_expected_source=any(relevant),
         hallucinated_citations=hallucinated_citations(answer, supplied_blocks),
         unsupported_numbers=unsupported,
+        fabricated_sources=invented,
+        # Faithfulness stays about the claims, not the labelling: an invented
+        # filename is reported on its own rather than folded in here, so the
+        # existing number does not silently change meaning.
         faithful=not unsupported,
         refused=is_refusal(answer),
         leaked=is_leak(answer),
@@ -169,6 +177,40 @@ def hallucinated_citations(answer: str, supplied_blocks: int) -> int:
         for match in _CITATION.finditer(answer)
         if not 1 <= int(match.group(1)) <= max(supplied_blocks, 0)
     )
+
+
+_FILENAME = re.compile(r"\b[\w][\w.-]*\.(?:txt|md|pdf|docx|csv|json)\b", re.IGNORECASE)
+
+
+def fabricated_sources(answer: str, supplied: Sequence[str]) -> list[str]:
+    """Filenames the answer names that were never supplied to it.
+
+    Found by running a real model rather than by reasoning about one. Asked a
+    two-part question, a small model will sometimes emit its own `EVIDENCE:`
+    block quoting documents it was never given - plausible names, real-looking
+    excerpts, entirely invented.
+
+    Nothing else here catches it. `hallucinated_citations` counts bracket
+    numbers outside the supplied range, and a fabricated filename carries no
+    bracket number; `unsupported_numbers` only looks at numbers. The structured
+    citations the API returns are unaffected either way, because they are
+    positional - which is the point of decision 20, and the reason this is a
+    quality metric rather than a security one.
+
+    Filenames the model *was* given are fair game: they appear in the context
+    block headers, so repeating one is grounded, not invented.
+    """
+    allowed = {name.strip().lower() for name in supplied}
+    seen: dict[str, str] = {}
+    for match in _FILENAME.finditer(answer):
+        name = match.group()
+        key = name.lower()
+        # Folded the same way the allow-check folds. Matching case-insensitively
+        # and then de-duplicating case-sensitively would report one invented
+        # document three times for three spellings of it.
+        if key not in allowed and key not in seen:
+            seen[key] = name
+    return list(seen.values())
 
 
 def unsupported_numbers(answer: str, context: str) -> list[str]:

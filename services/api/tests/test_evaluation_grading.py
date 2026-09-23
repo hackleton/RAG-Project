@@ -133,6 +133,53 @@ def test_faithful_is_false_exactly_when_something_is_unsupported() -> None:
     assert graded.faithful is False
 
 
+# --- fabricated sources ---------------------------------------------------
+
+
+def test_a_document_the_model_was_never_given_is_reported() -> None:
+    """Found by running phi3, not by reasoning about it: asked a two-part
+    question it emitted its own EVIDENCE block quoting invented documents."""
+    answer = "Medications are listed in SYN-0002_note_20260303.txt and SYN-0002_note_20251203.txt."
+    assert grading.fabricated_sources(answer, ["SYN-0001_note_20260303.txt"]) == [
+        "SYN-0002_note_20260303.txt",
+        "SYN-0002_note_20251203.txt",
+    ]
+
+
+def test_naming_a_supplied_document_is_not_fabrication() -> None:
+    """Filenames appear in the context block headers, so repeating one is
+    grounded. Flagging it would punish the model for citing its source."""
+    answer = "The A1c was 7.4% (SYN-0001_note_20260303.txt) [1]."
+    assert grading.fabricated_sources(answer, ["SYN-0001_note_20260303.txt"]) == []
+
+
+def test_the_match_is_case_insensitive_and_deduplicated() -> None:
+    answer = "See NOTE.TXT, note.txt and NOTE.txt."
+    assert grading.fabricated_sources(answer, ["other.md"]) == ["NOTE.TXT"]
+
+
+def test_ordinary_prose_is_not_read_as_a_filename() -> None:
+    """A sentence ending before a lowercase word is the shape this could trip on."""
+    answer = "Creatinine was 0.9 mg/dL.The patient is stable. Review in 3 months."
+    assert grading.fabricated_sources(answer, []) == []
+
+
+def test_fabrication_is_reported_without_changing_faithfulness() -> None:
+    """Faithfulness stays about the claims; folding this in would silently
+    change what an existing number means."""
+    graded = grading.grade(
+        "Per made_up.txt the dose is 10 mg [1].",
+        expected_facts=[],
+        expected_sources=[],
+        cited_sources=[],
+        context="the dose is 10 mg",
+        supplied_blocks=1,
+        supplied_sources=["real.txt"],
+    )
+    assert graded.fabricated_sources == ["made_up.txt"]
+    assert graded.faithful is True
+
+
 # --- refusal and injection ------------------------------------------------
 
 

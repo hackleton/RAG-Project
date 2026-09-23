@@ -26,6 +26,7 @@ from app.evaluation.experiments import (
     GATES,
     check_regression,
     environment_payload,
+    generation_changes,
     incomparable,
     load_baseline,
     retrieval_changes,
@@ -53,6 +54,8 @@ def baseline(**config: Any) -> dict[str, Any]:
         "config": {
             "embedding_provider": "hash",
             "embedding_model": "m",
+            "llm_provider": "echo",
+            "llm_model": "stub",
             "chunk_target_tokens": 512,
             "chunk_overlap_tokens": 64,
             "retrieval": {"top_k": 5, "mode": "hybrid"},
@@ -66,6 +69,8 @@ def environment(**overrides: Any) -> dict[str, Any]:
     return {
         "embedding_provider": "hash",
         "embedding_model": "m",
+        "llm_provider": "echo",
+        "llm_model": "stub",
         "chunk_target_tokens": 512,
         "chunk_overlap_tokens": 64,
         "retrieval": {"top_k": 5, "mode": "hybrid"},
@@ -171,6 +176,24 @@ def test_a_retrieval_change_is_judged_not_skipped() -> None:
 
 def test_an_unchanged_retrieval_configuration_reports_no_changes() -> None:
     assert retrieval_changes(baseline(), environment()) == []
+
+
+def test_swapping_the_model_is_reported_rather_than_blocking_the_comparison() -> None:
+    """Every gated metric is upstream of the model or guaranteed by the access
+    filter, so the verdict still holds when the model changes - but the
+    generation numbers under it do not compare, and silence implied they did.
+    """
+    config = environment(llm_provider="ollama", llm_model="phi3:latest")
+
+    assert incomparable(baseline(), dataset_version="v1", config=config) == []
+    assert generation_changes(baseline(), config) == [
+        "llm_provider 'echo' -> 'ollama'",
+        "llm_model 'stub' -> 'phi3:latest'",
+    ]
+
+
+def test_an_unchanged_model_reports_no_generation_changes() -> None:
+    assert generation_changes(baseline(), environment()) == []
 
 
 # --- the baseline file -----------------------------------------------------

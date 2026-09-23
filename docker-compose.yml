@@ -88,6 +88,11 @@ services:
       READONLY_DATABASE_URL: mssql+aioodbc://${MSSQL_READONLY_USER:-copilot_readonly}:${MSSQL_READONLY_PASSWORD}@mssql:1433/${MSSQL_DB:-copilot}?driver=ODBC+Driver+18+for+SQL+Server&TrustServerCertificate=yes
       REDIS_URL: redis://redis:6379/0
       QDRANT_URL: http://qdrant:6333
+      # Ollama runs on the host, not in the compose network. Hardcoded rather
+      # than ${OLLAMA_BASE_URL:-...} for the same reason as the two above: .env
+      # carries the value a developer needs from *their* shell, and the
+      # container needs a different one for the same service.
+      OLLAMA_BASE_URL: http://host.docker.internal:11434
       STORAGE_DIR: /srv/.data/storage
       # Where scripts/generate_synthetic_documents.py writes the corpus.
       CORPUS_DIR: /evaluation/datasets/documents
@@ -104,6 +109,11 @@ services:
       - api_storage:/srv/.data
       # The generated corpus and evaluation datasets belong in the repo.
       - ./evaluation:/evaluation
+    # Docker Desktop provides host.docker.internal; Linux does not, so it is
+    # mapped explicitly. CI never connects (LLM_PROVIDER=echo), but a name that
+    # resolves everywhere beats one that fails differently per platform.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       mssql: { condition: service_healthy }
       mssql-init: { condition: service_completed_successfully }
