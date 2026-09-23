@@ -6,7 +6,7 @@ import Link from "next/link";
 
 import { SessionGate } from "@/components/SessionGate";
 import { api, type CurrentUser, type DocumentList, type Health } from "@/lib/api";
-import { clearToken, getToken } from "@/lib/session";
+import { clearSession } from "@/lib/session";
 
 const ROADMAP = [
   { sprint: "Sprint 1", title: "Foundation", state: "done" },
@@ -14,8 +14,8 @@ const ROADMAP = [
   { sprint: "Sprint 3", title: "Hybrid retrieval and citations", state: "done" },
   { sprint: "Sprint 4", title: "Agentic workflow", state: "done" },
   { sprint: "Sprint 5", title: "Evaluation harness", state: "done" },
-  { sprint: "Sprint 6", title: "Security hardening", state: "next" },
-  { sprint: "Sprint 7", title: "Cache, tracing, CI/CD", state: "planned" },
+  { sprint: "Sprint 6", title: "Security hardening", state: "done" },
+  { sprint: "Sprint 7", title: "Cache, tracing, CI/CD", state: "next" },
 ] as const;
 
 export default function HomePage() {
@@ -34,18 +34,19 @@ function Dashboard({ user }: { user: CurrentUser }) {
       .then(setHealth)
       .catch(() => setHealth(null));
 
-    const token = getToken();
-    if (token) {
-      api
-        .documents(token, controller.signal)
-        .then(setDocuments)
-        .catch(() => setDocuments(null));
-    }
+    api
+      .documents(controller.signal)
+      .then(setDocuments)
+      .catch(() => setDocuments(null));
     return () => controller.abort();
   }, []);
 
-  function signOut() {
-    clearToken();
+  async function signOut() {
+    // Revokes the token server-side and clears the cookie. Forgetting the
+    // session locally is not a sign-out: without this the token stays valid
+    // for the rest of its hour to anyone who captured it.
+    await api.logout().catch(() => undefined);
+    clearSession();
     router.replace("/login");
   }
 
@@ -78,6 +79,15 @@ function Dashboard({ user }: { user: CurrentUser }) {
           >
             Evaluation
           </Link>
+          {/* The API refuses this for other roles; hiding it is a courtesy. */}
+          {user.role === "admin" ? (
+            <Link
+              href="/audit"
+              className="rounded-md border border-border px-3 py-1.5 text-sm"
+            >
+              Audit
+            </Link>
+          ) : null}
           <Link
             href="/agent"
             className="rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-accent-ink"

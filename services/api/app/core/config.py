@@ -192,6 +192,26 @@ class Settings(BaseSettings):
     # bcrypt cost. 12 is the production floor; tests override it to keep the
     # suite fast (bcrypt is intentionally slow).
     bcrypt_rounds: int = 12
+    # Issue the access token as an httpOnly cookie as well as in the body.
+    # The body copy stays for the Swagger UI and the scripts; the browser app
+    # reads neither and relies on the cookie (decision 36).
+    auth_cookie_enabled: bool = True
+    auth_cookie_name: str = "hic_access"
+    # `secure` cannot be on over plain http, which is how the local demo runs.
+    # Production refuses to start with it off - see `_validate_production`.
+    auth_cookie_secure: bool = False
+    auth_cookie_samesite: Literal["lax", "strict", "none"] = "lax"
+
+    # --- Security ---------------------------------------------------------
+    # Redact instruction-like text out of retrieved chunks before they reach a
+    # prompt (project plan section 12). Configuration rather than a constant so
+    # the evaluation can measure the system with it off; it is not a tuning
+    # knob, and turning it off in production is refused below.
+    injection_filter_enabled: bool = True
+    # Failed logins allowed per email+IP inside the window before the endpoint
+    # starts refusing. Counted in-process: one API replica, one counter.
+    login_max_attempts: int = 10
+    login_attempt_window_seconds: int = 300
 
     @property
     def is_local(self) -> bool:
@@ -254,6 +274,18 @@ class Settings(BaseSettings):
             raise ValueError("JWT_SECRET_KEY must be at least 32 characters.")
         if self.debug:
             raise ValueError(f"DEBUG must be false when APP_ENV={self.app_env}.")
+
+        # The injection filter is configuration so an experiment can measure
+        # the system without it (project plan section 14 treats controls the
+        # same way it treats retrieval settings). That is a measurement, not a
+        # deployment: outside local/CI it may not be off.
+        if not self.injection_filter_enabled:
+            raise ValueError(f"INJECTION_FILTER_ENABLED must be true when APP_ENV={self.app_env}.")
+        if self.auth_cookie_enabled and not self.auth_cookie_secure:
+            raise ValueError(
+                f"AUTH_COOKIE_SECURE must be true when APP_ENV={self.app_env} - "
+                "an httpOnly cookie sent over plain http is not a protection."
+            )
         return self
 
 

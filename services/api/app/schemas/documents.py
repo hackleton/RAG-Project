@@ -25,6 +25,10 @@ class DocumentRead(BaseModel):
     status_detail: str | None
     page_count: int | None
     chunk_count: int
+    # Chunks carrying instruction-like text, counted at ingestion. Surfaced so
+    # the corpus view answers "which documents were tampered with" without a
+    # database session (project plan section 12).
+    injection_flag_count: int
     checksum_sha256: str
     created_at: datetime
     indexed_at: datetime | None

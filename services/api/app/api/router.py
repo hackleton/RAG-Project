@@ -8,7 +8,16 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
-from app.api.routes import agents, auth, chat, documents, evaluations, health, search
+from app.api.routes import (
+    agents,
+    audit,
+    auth,
+    chat,
+    documents,
+    evaluations,
+    health,
+    search,
+)
 
 root_router = APIRouter()
 root_router.include_router(health.router)
@@ -20,3 +29,4 @@ api_router.include_router(chat.router)
 api_router.include_router(search.router)
 api_router.include_router(agents.router)
 api_router.include_router(evaluations.router)
+api_router.include_router(audit.router)

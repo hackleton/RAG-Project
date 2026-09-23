@@ -41,3 +41,14 @@ class CurrentUserResponse(UserRead):
         default=None,
         description="Null means unrestricted (admin); a list means filtered access.",
     )
+
+
+class LogoutResponse(BaseModel):
+    """Whether the presented token was added to the revocation list.
+
+    `false` means the caller authenticated some other way than by presenting a
+    token this endpoint could read - the cookie is cleared either way, and a
+    client should treat the session as over regardless.
+    """
+
+    revoked: bool

@@ -11,7 +11,6 @@ import {
   type CurrentUser,
   type RetrievalMode,
 } from "@/lib/api";
-import { getToken } from "@/lib/session";
 
 interface Turn {
   question: string;
@@ -49,8 +48,7 @@ function Chat({ user }: { user: CurrentUser }) {
   async function onSubmit(event: React.FormEvent) {
     event.preventDefault();
     const asked = question.trim();
-    const token = getToken();
-    if (!asked || !token || pending) return;
+    if (!asked || pending) return;
 
     setQuestion("");
     setPending(true);
@@ -60,7 +58,7 @@ function Chat({ user }: { user: CurrentUser }) {
     ]);
 
     try {
-      const answer = await api.chat(token, {
+      const answer = await api.chat({
         question: asked,
         session_id: sessionId,
         overrides: { mode, rerank, top_k: topK },
@@ -261,6 +259,16 @@ function SourceTable({ answer }: { answer: ChatAnswer }) {
                 <span className="text-ink">{source.filename}</span>
                 {source.section ? (
                   <span className="text-ink-muted"> · {source.section}</span>
+                ) : null}
+                {/* A redaction happened to text this answer was built on, so
+                    it belongs beside the source rather than only in the trace. */}
+                {source.injection_signals.length > 0 ? (
+                  <span
+                    title={`Instruction-like text removed: ${source.injection_signals.join(", ")}`}
+                    className="ml-2 rounded border border-danger px-1 py-0.5 text-[10px] text-danger"
+                  >
+                    filtered
+                  </span>
                 ) : null}
                 <span className="mt-0.5 block text-ink-muted">
                   {source.text.slice(0, 140)}

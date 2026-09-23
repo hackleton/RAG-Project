@@ -4,7 +4,7 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 
 import { ApiError, api } from "@/lib/api";
-import { setToken } from "@/lib/session";
+import { markSignedIn } from "@/lib/session";
 
 export default function LoginPage() {
   const router = useRouter();
@@ -20,8 +20,11 @@ export default function LoginPage() {
     setError(null);
     setRequestId(null);
     try {
-      const { access_token } = await api.login(email, password);
-      setToken(access_token);
+      // The token that matters arrives as an httpOnly cookie the browser
+      // stores and this code never sees; the body copy is for the API docs
+      // and the scripts. All that is kept here is "a session was started".
+      await api.login(email, password);
+      markSignedIn();
       router.replace("/");
     } catch (caught) {
       // The API deliberately returns one message for both wrong password and

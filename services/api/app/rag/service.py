@@ -23,11 +23,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.errors import NotFoundError
 from app.core.logging import get_logger
 from app.models.chat import ChatMessage, ChatSession
-from app.models.enums import ChatRole
+from app.models.enums import AuditAction, ChatRole
 from app.models.patient import Patient
 from app.providers.llm import LLMProvider
 from app.rag.prompts import SYSTEM_PROMPT, build_user_prompt, parse_citations
 from app.rag.retriever import HybridRetriever, RetrievalConfig, RetrievedChunk
+from app.security import injection
+from app.security.audit import record_audit
 from app.security.principal import Principal
 from app.security.rbac import assert_patient_access
 
@@ -107,7 +109,26 @@ class RagService:
             system=SYSTEM_PROMPT,
             user=build_user_prompt(question, retrieval.chunks),
         )
-        citations = self._citations(completion.text, retrieval.chunks)
+        answer_text, leaked = injection.redact_system_prompt(completion.text, SYSTEM_PROMPT)
+        if leaked:
+            # Section 12's first scenario. Nothing upstream can prevent it: the
+            # system prompt is not data the caller lacks permission for, it is
+            # text the model is holding. Checking the output is the only
+            # control that survives swapping the model.
+            retrieval.trace["injection"] = dict(retrieval.trace.get("injection", {})) | {
+                "system_prompt_redacted": True
+            }
+            await record_audit(
+                session,
+                action=AuditAction.INJECTION_BLOCKED,
+                principal=principal,
+                resource_type="answer",
+                allowed=True,
+                details={"reason": "system_prompt_disclosure"},
+            )
+            logger.warning("system_prompt_redacted", question_chars=len(question))
+
+        citations = self._citations(answer_text, retrieval.chunks)
         latency_ms = int((time.perf_counter() - started) * 1000)
 
         chat_session = await self._session_for(session, principal, session_id, question, patient_id)
@@ -115,7 +136,7 @@ class RagService:
         message = ChatMessage(
             session_id=chat_session.id,
             role=ChatRole.ASSISTANT,
-            content=completion.text,
+            content=answer_text,
             citations=[_citation_payload(citation) for citation in citations],
             retrieval_trace={**retrieval.trace, "model": completion.model},
             prompt_tokens=completion.prompt_tokens,
@@ -137,7 +158,7 @@ class RagService:
         return ChatAnswer(
             session_id=chat_session.id,
             message_id=message.id,
-            answer=completion.text,
+            answer=answer_text,
             citations=citations,
             sources=retrieval.chunks,
             trace=retrieval.trace,

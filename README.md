@@ -25,8 +25,8 @@ swapped in later as adapters rather than a rewrite — see
 | 3 | Search + RAG — embeddings, hybrid retrieval, reranking, citations | **Done** |
 | 4 | Agentic AI — router, tool gate, SQL tool, synthesis | **Done** |
 | 5 | Evaluation — dataset, retrieval + generation metrics, regression runs | **Done** |
-| 6 | Security — RBAC depth, metadata filters, SQL restrictions, injection tests | Next |
-| 7 | Production — Redis cache, tracing, cost/latency dashboard, CI/CD | Planned |
+| 6 | Security — injection filter, cookie auth, revocation, throttling, audit read | **Done** |
+| 7 | Production — Redis cache, tracing, cost/latency dashboard, CI/CD | Next |
 | 8 | Interview hardening — architecture review, failure analysis, demo | Planned |
 
 Every endpoint in the plan now has behaviour behind it; nothing returns `501`
@@ -38,8 +38,21 @@ any more.
   (`admin`, `clinician`, `analyst`), per-user patient scoping.
 - **Authorisation**: role checks and patient/sensitivity scoping as pure,
   framework-free predicates, enforced by application code rather than prompts.
-- **Audit trail**: append-only log of security-relevant events; failed logins are
-  written in their own transaction so a rejected request still leaves a record.
+- **Audit trail**: append-only log of security-relevant events, readable at
+  `GET /audit` by an administrator and summarised with denials broken out.
+  Failed logins are written in their own transaction so a rejected request
+  still leaves a record, and reading the trail is itself recorded in it.
+- **Prompt-injection filter**: retrieved chunks are scanned for
+  instruction-shaped text and the offending *sentences* are removed before the
+  prompt is built, with the clinical content around them kept. Documents are
+  flagged at ingestion so tampering is visible at upload rather than at first
+  retrieval, the stored chunk keeps the original text, and the generated answer
+  is checked for a verbatim run of the system prompt. Measured on the corpus:
+  21 documents, 3 flagged, 0 false positives. It is not what enforces access —
+  see [decision 35](docs/decisions.md).
+- **Session handling**: the access token is an httpOnly, SameSite=lax cookie the
+  page's own JavaScript cannot read; `/auth/logout` revokes it by `jti` rather
+  than only clearing it, and failed sign-ins are rate limited per email and IP.
 - **Schema**: the full data model from the plan, under Alembic migrations
   generated against real SQL Server and verified to match the ORM metadata.
 - **Read-only database login**: `copilot_readonly` has `db_datareader` plus
@@ -299,10 +312,27 @@ Recorded in full in [docs/decisions.md](docs/decisions.md). The short version:
 
 ## Known limitations
 
-- The access token is held in `sessionStorage` on the client. Acceptable for a
-  local demo with synthetic data; Sprint 6 moves it to an httpOnly cookie.
-- There is no rate limiting or token revocation yet. The `jti` claim is already
-  issued so revocation has something to key on.
+- **The injection filter runs after ranking, not before it.** Planted text is
+  redacted on the way into a prompt, but it was embedded and indexed first, so
+  it still influences *which* chunks are retrieved. Fixing that means filtering
+  at ingest, which would leave the stored document no longer matching the bytes
+  that were uploaded; the trade was made in favour of the record
+  ([decision 35](docs/decisions.md)).
+- **The injection filter is a pattern set and can be phrased around.** It is
+  worth having because it makes tampering visible and takes the text away, not
+  because it is a boundary. What actually stops a caller reading another
+  patient's record is the pre-search access filter, which holds whatever a
+  document says.
+- The failed-login limiter counts in the process, so with more than one API
+  replica the effective limit is the configured one times the replica count and
+  a restart forgives everything ([decision 38](docs/decisions.md)). Redis in
+  Sprint 7 is where it belongs.
+- Token revocation is a deny-list, so it fails *open* for tokens nobody revoked
+  if the database is briefly unreachable — the inverse of a session table,
+  chosen deliberately ([decision 37](docs/decisions.md)).
+- `AUTH_COOKIE_SECURE` ships false because the local demo is plain http.
+  `Settings.validate_production_safety` refuses to start with it false anywhere
+  else.
 - SQL Server cannot pin a statement timeout to a login the way Postgres can, so
   `READONLY_QUERY_TIMEOUT_SECONDS` is enforced client-side by the SQL tool. That
   is a weaker control and is called out in [decision 12](docs/decisions.md).

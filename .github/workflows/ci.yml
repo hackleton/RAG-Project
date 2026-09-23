@@ -176,6 +176,13 @@ jobs:
       - name: The SQL guard scopes and refuses on SQL Server
         run: docker compose run --rm api python scripts/smoke_sql_tool.py
 
+      # Sprint 6's controls, through the API rather than in process. A control
+      # can be present in the code and absent from the deployment: a cookie the
+      # middleware strips, a filter wired into a retriever nothing calls, a
+      # revocation table the migration never created.
+      - name: Injection filter, revocation, audit trail and login throttle
+        run: docker compose run --rm api python scripts/smoke_security.py
+
       # The in-process guard is unit tested; this checks the layer underneath
       # it, which is the one that still holds if the guard has a bug.
       - name: The SQL tool's login cannot write even when asked directly

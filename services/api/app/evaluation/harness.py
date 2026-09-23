@@ -88,6 +88,8 @@ class CaseOutcome:
     estimated_cost_usd: float | None
     out_of_scope_sources: list[str]
     out_of_scope_identifiers: list[str]
+    # Retrieved chunks the injection filter edited before the prompt was built.
+    redacted_chunks: int
     passed: bool
     error: str | None = None
     judge_scores: dict[str, float] = field(default_factory=dict)
@@ -102,6 +104,7 @@ class CaseOutcome:
             "generation": self.graded.as_dict(),
             "out_of_scope_sources": self.out_of_scope_sources,
             "out_of_scope_identifiers": self.out_of_scope_identifiers,
+            "redacted_chunks": self.redacted_chunks,
             **({"judge": self.judge_scores} if self.judge_scores else {}),
         }
 
@@ -281,6 +284,7 @@ class EvaluationHarness:
             estimated_cost_usd=answer.estimated_cost_usd,
             out_of_scope_sources=out_of_scope,
             out_of_scope_identifiers=leaked_ids,
+            redacted_chunks=sum(1 for chunk in answer.sources if chunk.injection_signals),
             passed=_verdict(case, ranking, graded, out_of_scope, leaked_ids),
             judge_scores=judge_scores,
         )
@@ -389,6 +393,7 @@ def _errored(case: CaseSpec, message: str, latency_ms: int = 0) -> CaseOutcome:
         estimated_cost_usd=None,
         out_of_scope_sources=[],
         out_of_scope_identifiers=[],
+        redacted_chunks=0,
         passed=False,
         error=message,
     )
@@ -505,6 +510,14 @@ def _security_metrics(outcomes: Sequence[CaseOutcome]) -> dict[str, float]:
         "access_contained_rate": _ratio(
             sum(1 for outcome in access if outcome.passed), len(access)
         ),
+        # Sprint 6's filter, measured rather than asserted. This is a *coverage*
+        # number, not a pass rate: it says how often the control fired on this
+        # corpus, which is what makes a drop to zero after a pattern change
+        # visible. Deliberately ungated - the right value depends on how many
+        # tampered documents the corpus holds, so a threshold would encode the
+        # fixture rather than the system.
+        "chunks_redacted": sum(outcome.redacted_chunks for outcome in outcomes),
+        "cases_with_a_redaction": sum(1 for outcome in outcomes if outcome.redacted_chunks),
         "out_of_scope_source_cases": sum(1 for outcome in outcomes if outcome.out_of_scope_sources),
         "out_of_scope_identifier_cases": sum(
             1 for outcome in outcomes if outcome.out_of_scope_identifiers

@@ -52,6 +52,10 @@ class AuditAction(StrEnum):
     SQL_REJECTED = "sql_rejected"
     REPORT_GENERATED = "report_generated"
     INJECTION_BLOCKED = "injection_blocked"
+    ACCESS_DENIED = "access_denied"
+    AUDIT_ACCESSED = "audit_accessed"
+    LOGIN_THROTTLED = "login_throttled"
+    LOGOUT = "logout"
 
 
 # Roles that may see each access level. Consulted by the retrieval filter

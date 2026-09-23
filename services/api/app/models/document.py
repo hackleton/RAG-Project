@@ -61,6 +61,11 @@ class Document(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     status_detail: Mapped[str | None] = mapped_column(UnicodeText)
     page_count: Mapped[int | None] = mapped_column(Integer)
     chunk_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    # Chunks carrying instruction-like text, counted at ingestion. A column
+    # rather than a JSON field because the question it answers - "which
+    # documents in this corpus carry planted instructions?" - is a query, and
+    # it is the first one asked after an incident.
+    injection_flag_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     uploaded_by_id: Mapped[uuid.UUID | None] = mapped_column(
         Uuid(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL")
     )

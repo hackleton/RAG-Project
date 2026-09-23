@@ -1,18 +1,19 @@
 /**
- * Client-side session storage.
+ * Client-side session state.
  *
- * KNOWN LIMITATION, tracked for Sprint 6: the access token is held in
- * `sessionStorage`, which is readable by any script running on the page. That
- * is acceptable for a local demo with synthetic data and no third-party
- * scripts, and it keeps Sprint 1 free of cookie/CSRF machinery. The production
- * shape is an httpOnly, SameSite=Strict cookie issued by the API, with the
- * refresh handled server-side.
+ * Sprint 6 moved the access token out of this file entirely. It now lives in
+ * an httpOnly cookie the API sets, which script on this page cannot read - so
+ * an injected script cannot exfiltrate the session the way it could when the
+ * token sat in `sessionStorage`. Nothing here is a credential any more.
  *
- * `sessionStorage` (not `localStorage`) at least scopes the token to the tab
- * and clears it when the tab closes.
+ * What is left is a flag saying "we believe there is a session", so the first
+ * paint can redirect to /login without waiting on a network round trip. It is
+ * a hint and nothing else: the browser can have it while the cookie is gone,
+ * and `/auth/me` is what actually decides. Treating it as authority would be
+ * an authorisation check running on the client, which is not one.
  */
 
-const TOKEN_KEY = "hic.access_token";
+const SESSION_KEY = "hic.signed_in";
 
 function storage(): Storage | null {
   // Absent during server rendering, and throws in some privacy modes.
@@ -24,25 +25,26 @@ function storage(): Storage | null {
   }
 }
 
-export function getToken(): string | null {
+/** A hint, never a decision. The API is the authority. */
+export function hasSession(): boolean {
   try {
-    return storage()?.getItem(TOKEN_KEY) ?? null;
+    return storage()?.getItem(SESSION_KEY) === "1";
   } catch {
-    return null;
+    return false;
   }
 }
 
-export function setToken(token: string): void {
+export function markSignedIn(): void {
   try {
-    storage()?.setItem(TOKEN_KEY, token);
+    storage()?.setItem(SESSION_KEY, "1");
   } catch {
-    // Non-fatal: the session simply does not survive a reload.
+    // Non-fatal: the app just shows the sign-in page once more than needed.
   }
 }
 
-export function clearToken(): void {
+export function clearSession(): void {
   try {
-    storage()?.removeItem(TOKEN_KEY);
+    storage()?.removeItem(SESSION_KEY);
   } catch {
     /* nothing to clean up */
   }

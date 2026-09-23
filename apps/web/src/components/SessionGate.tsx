@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 
 import { ApiError, api, type CurrentUser } from "@/lib/api";
-import { clearToken, getToken } from "@/lib/session";
+import { clearSession, hasSession } from "@/lib/session";
 
 type State =
   | { phase: "loading" }
@@ -14,9 +14,11 @@ type State =
 /**
  * Resolves the signed-in user before rendering its children.
  *
- * The token is only a claim; `/auth/me` is what decides whether the session is
- * still valid. A 401 here means the account was deactivated, its role changed
- * or the token expired, so the stale token is discarded rather than retried.
+ * Since Sprint 6 the credential is an httpOnly cookie this code cannot read,
+ * so there is nothing here to inspect - `/auth/me` is what decides whether the
+ * session is still valid. `hasSession()` only skips that round trip for a
+ * visitor who has plainly never signed in. A 401 means the account was
+ * deactivated, its role changed, or the token expired or was revoked.
  */
 export function SessionGate({
   children,
@@ -27,20 +29,19 @@ export function SessionGate({
   const [state, setState] = useState<State>({ phase: "loading" });
 
   useEffect(() => {
-    const token = getToken();
-    if (!token) {
+    if (!hasSession()) {
       router.replace("/login");
       return;
     }
 
     const controller = new AbortController();
     api
-      .me(token, controller.signal)
+      .me(controller.signal)
       .then((user) => setState({ phase: "ready", user }))
       .catch((error: unknown) => {
         if (controller.signal.aborted) return;
         if (error instanceof ApiError && error.status === 401) {
-          clearToken();
+          clearSession();
           router.replace("/login");
           return;
         }

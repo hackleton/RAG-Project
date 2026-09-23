@@ -19,6 +19,7 @@ from app.models.enums import (
 )
 from app.models.evaluation import EvaluationCase, EvaluationResult, EvaluationRun
 from app.models.patient import LabResult, Patient
+from app.models.token import RevokedToken
 from app.models.user import PatientAccessGrant, User
 
 __all__ = [
@@ -39,6 +40,7 @@ __all__ = [
     "LabResult",
     "Patient",
     "PatientAccessGrant",
+    "RevokedToken",
     "Role",
     "User",
 ]

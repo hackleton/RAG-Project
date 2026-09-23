@@ -12,7 +12,6 @@ import {
   type CurrentUser,
   type ToolCatalogue,
 } from "@/lib/api";
-import { getToken } from "@/lib/session";
 
 interface Turn {
   question: string;
@@ -35,13 +34,10 @@ function Agent({ user }: { user: CurrentUser }) {
 
   useEffect(() => {
     const controller = new AbortController();
-    const token = getToken();
-    if (token) {
-      api
-        .agentTools(token, controller.signal)
-        .then(setCatalogue)
-        .catch(() => setCatalogue(null));
-    }
+    api
+      .agentTools(controller.signal)
+      .then(setCatalogue)
+      .catch(() => setCatalogue(null));
     return () => controller.abort();
   }, []);
 
@@ -53,8 +49,7 @@ function Agent({ user }: { user: CurrentUser }) {
   async function onSubmit(event: React.FormEvent) {
     event.preventDefault();
     const asked = question.trim();
-    const token = getToken();
-    if (!asked || !token || pending) return;
+    if (!asked || pending) return;
 
     setQuestion("");
     setPending(true);
@@ -64,7 +59,7 @@ function Agent({ user }: { user: CurrentUser }) {
     ]);
 
     try {
-      const run = await api.agentRun(token, {
+      const run = await api.agentRun({
         question: asked,
         session_id: sessionId,
         patient_external_id: patient.trim() || null,

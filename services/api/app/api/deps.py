@@ -3,6 +3,12 @@
 `get_current_principal` is the single place a request turns into an identity.
 It resolves the caller's patient scope once per request so that retrieval
 filters, tool authorisation and audit records all read the same scope.
+
+A token may arrive in the `Authorization` header or in the httpOnly cookie the
+browser app uses (decision 36). The header wins when both are present: a client
+that went to the trouble of sending one is being explicit, and silently
+preferring an older cookie would make "log in as someone else" depend on
+which credential the browser happened to keep.
 """
 
 from __future__ import annotations
@@ -22,13 +28,13 @@ from app.agents.registry import ToolRegistry
 from app.agents.service import AgentService
 from app.core.config import PlannerName, Settings, get_settings
 from app.core.db import get_db_session
-from app.core.errors import AuthenticationError
+from app.core.errors import AuthenticationError, PermissionDeniedError
 from app.core.logging import user_id_ctx
 from app.core.security import decode_access_token
 from app.documents.chunking import ChunkingConfig
 from app.documents.pipeline import DocumentPipeline
 from app.documents.service import DocumentService
-from app.models.enums import Role
+from app.models.enums import AuditAction, Role
 from app.models.user import PatientAccessGrant, User
 from app.providers.embedding import EmbeddingProvider
 from app.providers.llm import LLMProvider
@@ -37,8 +43,10 @@ from app.providers.vectorstore import VectorStore
 from app.rag.indexer import Indexer
 from app.rag.retriever import HybridRetriever, RetrievalConfig
 from app.rag.service import RagService
+from app.security.audit import record_audit_independent
 from app.security.principal import Principal
 from app.security.rbac import assert_role
+from app.security.tokens import is_revoked
 
 oauth2_scheme = OAuth2PasswordBearer(
     tokenUrl=f"{get_settings().api_prefix}/auth/token", auto_error=False
@@ -60,16 +68,34 @@ SettingsDep = Annotated[Settings, Depends(get_app_settings)]
 DbSession = Annotated[AsyncSession, Depends(get_db_session)]
 
 
+def bearer_or_cookie(
+    request: Request,
+    settings: SettingsDep,
+    header_token: Annotated[str | None, Depends(oauth2_scheme)] = None,
+) -> str | None:
+    """The raw access token this request presented, from either transport."""
+    if header_token:
+        return header_token
+    if not settings.auth_cookie_enabled:
+        return None
+    return request.cookies.get(settings.auth_cookie_name)
+
+
 async def get_current_principal(
     request: Request,
     session: DbSession,
     settings: SettingsDep,
-    token: Annotated[str | None, Depends(oauth2_scheme)] = None,
+    token: Annotated[str | None, Depends(bearer_or_cookie)] = None,
 ) -> Principal:
     if not token:
-        raise AuthenticationError("Missing bearer token.")
+        raise AuthenticationError("Missing access token.")
 
     payload = decode_access_token(token, settings)
+    if await is_revoked(session, payload.get("jti")):
+        # A signature that still verifies is not the same as a session that is
+        # still open. Checked here rather than in each route so logging out
+        # means the same thing everywhere.
+        raise AuthenticationError("This token has been revoked.")
     user_id = payload["sub"]
 
     user = await session.scalar(select(User).where(User.id == _as_uuid(user_id)))
@@ -103,10 +129,35 @@ CurrentUser = Annotated[Principal, Depends(get_current_principal)]
 
 
 def require_roles(*allowed: Role) -> Callable[..., Coroutine[Any, Any, Principal]]:
-    """Dependency factory: `principal: Principal = Depends(require_roles(Role.ADMIN))`."""
+    """Dependency factory: `principal: Principal = Depends(require_roles(Role.ADMIN))`.
 
-    async def _dependency(principal: CurrentUser) -> Principal:
-        assert_role(principal, allowed)
+    A refusal here is audited. Until Sprint 6 it was not: the registry recorded
+    a denied *tool* call and the document service recorded a denied patient,
+    but a caller turned away at the HTTP role gate left no row at all - which
+    is the one place someone probing what they can reach shows up first.
+
+    Written out of band, because raising rolls this request's transaction back
+    and would take the record of the refusal with it.
+    """
+
+    async def _dependency(request: Request, principal: CurrentUser) -> Principal:
+        try:
+            assert_role(principal, allowed)
+        except PermissionDeniedError:
+            await record_audit_independent(
+                action=AuditAction.ACCESS_DENIED,
+                principal=principal,
+                resource_type="endpoint",
+                resource_id=request.url.path,
+                allowed=False,
+                ip_address=client_ip(request),
+                details={
+                    "required_roles": sorted(role.value for role in allowed),
+                    "actual_role": principal.role.value,
+                    "method": request.method,
+                },
+            )
+            raise
         return principal
 
     return _dependency
@@ -155,6 +206,7 @@ def get_retrieval_config(settings: SettingsDep) -> RetrievalConfig:
         rerank=settings.enable_reranker,
         rerank_top_n=settings.rerank_top_n,
         rerank_score_threshold=settings.rerank_score_threshold,
+        filter_injections=settings.injection_filter_enabled,
     )
 
 

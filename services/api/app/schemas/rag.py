@@ -53,6 +53,9 @@ class SourceRead(BaseModel):
     # Rank and raw score per strategy: {"dense": 3, "sparse": 11}.
     ranks: dict[str, int]
     scores: dict[str, float]
+    # Non-empty when the filter removed planted instructions from `text`. Names
+    # the signals, never the payload - see `app.security.injection.summarise`.
+    injection_signals: list[str] = Field(default_factory=list)
 
     @classmethod
     def from_chunk(cls, chunk: RetrievedChunk) -> SourceRead:
@@ -70,6 +73,7 @@ class SourceRead(BaseModel):
             rerank_score=chunk.rerank_score,
             ranks=chunk.ranks,
             scores=chunk.scores,
+            injection_signals=chunk.injection_signals,
         )
 
 

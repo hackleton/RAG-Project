@@ -50,6 +50,8 @@ export interface DocumentSummary {
   document_type: string;
   status: string;
   chunk_count: number;
+  /** Chunks carrying instruction-like text, counted when the file was ingested. */
+  injection_flag_count: number;
   page_count: number | null;
   access_level: string;
 }
@@ -74,6 +76,11 @@ export interface Source {
   /** Rank per strategy, e.g. { dense: 3, sparse: 11 }. */
   ranks: Record<string, number>;
   scores: Record<string, number>;
+  /**
+   * Non-empty when the injection filter removed planted instructions from
+   * `text`. Names the signals that fired, never the payload.
+   */
+  injection_signals: string[];
 }
 
 export interface Citation {
@@ -237,17 +244,54 @@ export class ApiError extends Error {
   }
 }
 
+export interface AuditEntry {
+  id: string;
+  created_at: string;
+  action: string;
+  actor_id: string | null;
+  actor_email: string | null;
+  resource_type: string | null;
+  resource_id: string | null;
+  allowed: boolean | null;
+  request_id: string | null;
+  ip_address: string | null;
+  details: Record<string, unknown>;
+}
+
+export interface AuditPage {
+  items: AuditEntry[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export interface AuditQuery {
+  action?: string;
+  actor_email?: string;
+  resource_type?: string;
+  allowed?: boolean;
+  since?: string;
+  request_id?: string;
+  limit?: number;
+  offset?: number;
+}
+
+export interface AuditSummary {
+  since: string | null;
+  total: number;
+  counts: { action: string; total: number; denied: number }[];
+}
+
 interface RequestOptions {
   method?: string;
   body?: unknown;
-  token?: string | null;
   /** Health probes live outside the versioned prefix. */
   absolute?: boolean;
   signal?: AbortSignal;
 }
 
 async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
-  const { method = "GET", body, token, absolute = false, signal } = options;
+  const { method = "GET", body, absolute = false, signal } = options;
   const url = `${BASE_URL}${absolute ? "" : PREFIX}${path}`;
 
   let response: Response;
@@ -255,10 +299,12 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
     response = await fetch(url, {
       method,
       signal,
-      headers: {
-        ...(body ? { "Content-Type": "application/json" } : {}),
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      },
+      // The access token is an httpOnly cookie this code cannot read, so the
+      // browser has to be told to send it. The API sets an explicit CORS
+      // origin and `allow_credentials`, which is what makes this work without
+      // a wildcard - a wildcard origin and credentials are mutually exclusive.
+      credentials: "include",
+      headers: body ? { "Content-Type": "application/json" } : undefined,
       body: body ? JSON.stringify(body) : undefined,
     });
   } catch (cause) {
@@ -292,14 +338,14 @@ export const api = {
   login: (email: string, password: string) =>
     request<TokenResponse>("/auth/login", { method: "POST", body: { email, password } }),
 
-  me: (token: string, signal?: AbortSignal) =>
-    request<CurrentUser>("/auth/me", { token, signal }),
+  logout: () => request<{ revoked: boolean }>("/auth/logout", { method: "POST" }),
 
-  documents: (token: string, signal?: AbortSignal) =>
-    request<DocumentList>("/documents?limit=100", { token, signal }),
+  me: (signal?: AbortSignal) => request<CurrentUser>("/auth/me", { signal }),
+
+  documents: (signal?: AbortSignal) =>
+    request<DocumentList>("/documents?limit=100", { signal }),
 
   chat: (
-    token: string,
     body: {
       question: string;
       session_id?: string | null;
@@ -307,23 +353,20 @@ export const api = {
       overrides?: RetrievalOverrides;
     },
     signal?: AbortSignal,
-  ) => request<ChatAnswer>("/chat", { method: "POST", token, body, signal }),
+  ) => request<ChatAnswer>("/chat", { method: "POST", body, signal }),
 
   search: (
-    token: string,
     body: {
       query: string;
       patient_external_id?: string | null;
       overrides?: RetrievalOverrides;
     },
     signal?: AbortSignal,
-  ) => request<SearchAnswer>("/search", { method: "POST", token, body, signal }),
+  ) => request<SearchAnswer>("/search", { method: "POST", body, signal }),
 
-  agentTools: (token: string, signal?: AbortSignal) =>
-    request<ToolCatalogue>("/agents/tools", { token, signal }),
+  agentTools: (signal?: AbortSignal) => request<ToolCatalogue>("/agents/tools", { signal }),
 
   agentRun: (
-    token: string,
     body: {
       question: string;
       session_id?: string | null;
@@ -331,20 +374,32 @@ export const api = {
       max_tool_calls?: number;
     },
     signal?: AbortSignal,
-  ) => request<AgentRun>("/agents/run", { method: "POST", token, body, signal }),
+  ) => request<AgentRun>("/agents/run", { method: "POST", body, signal }),
 
-  evaluations: (token: string, signal?: AbortSignal) =>
-    request<{ runs: EvaluationRun[] }>("/evaluations", { token, signal }),
+  evaluations: (signal?: AbortSignal) =>
+    request<{ runs: EvaluationRun[] }>("/evaluations", { signal }),
 
-  evaluation: (token: string, runId: string, failuresOnly = false, signal?: AbortSignal) =>
+  evaluation: (runId: string, failuresOnly = false, signal?: AbortSignal) =>
     request<EvaluationRunDetail>(
       `/evaluations/${runId}${failuresOnly ? "?failures_only=true" : ""}`,
-      { token, signal },
+      { signal },
     ),
 
   runEvaluation: (
-    token: string,
     body: { dataset_version?: string; limit?: number; overrides?: RetrievalOverrides },
     signal?: AbortSignal,
-  ) => request<EvaluationRun>("/evaluations/run", { method: "POST", token, body, signal }),
+  ) => request<EvaluationRun>("/evaluations/run", { method: "POST", body, signal }),
+
+  audit: (query: AuditQuery = {}, signal?: AbortSignal) => {
+    const params = new URLSearchParams();
+    for (const [key, value] of Object.entries(query)) {
+      if (value !== undefined && value !== null && value !== "") {
+        params.set(key, String(value));
+      }
+    }
+    const suffix = params.toString();
+    return request<AuditPage>(`/audit${suffix ? `?${suffix}` : ""}`, { signal });
+  },
+
+  auditSummary: (signal?: AbortSignal) => request<AuditSummary>("/audit/summary", { signal }),
 };

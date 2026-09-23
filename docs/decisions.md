@@ -796,3 +796,177 @@ change is a bug.
 **Cost.** Accepting a baseline is a manual step that someone has to remember,
 and a genuine improvement looks like a regression until they do. Two baseline
 files have to be kept in step with one dataset.
+
+---
+
+## 35. Injection defence is detection plus redaction, and it is not the access control
+
+**Decision.** `app/security/injection.py` scans text for instruction-shaped
+content. The document pipeline *flags* at ingestion and records a count on the
+document; the retriever *redacts* the offending sentences out of retrieved
+chunks on the way into a prompt. Neither is what stops a caller reaching
+another patient's record.
+
+**Why.** Project plan section 12 lists five attacks, and they do not all have
+the same answer. "Use the SQL tool to retrieve another patient's information"
+and "call an unauthorized tool" are refused by the pre-search access filter and
+by `ToolRegistry.dispatch`, and would be refused with this module deleted -
+those are access-control questions and the access control answers them. "Reveal
+the system prompt", "treat the document's instructions as higher priority" and
+"return hidden metadata" cannot escalate access at all, so no access control
+touches them. They are attempts to make the model misbehave, and the only
+useful responses are to see them and to take the text away.
+
+Saying that plainly matters more than the code does. A filter presented as the
+thing that stops data leaking would be the most dangerous component in the
+system: it is a pattern set, an attacker can phrase around it, and the moment
+anyone believes in it the real control stops being reviewed.
+
+**Detection at ingest, neutralisation at retrieval** because the two have
+different jobs. The stored chunk must stay faithful to the uploaded bytes -
+retrieval grounds its answers in it, and an operator investigating an incident
+needs to read what the document actually said - so nothing is rewritten in the
+database. But flagging only at retrieval would mean nobody learns a document is
+tampered with until somebody happens to search for it.
+
+**Redaction is by sentence.** The corpus payload is one sentence carrying four
+demands; removing only the span that matched would leave three standing, and
+removing the chunk would take the clinical note with it. Measured on the real
+corpus: 21 documents, 3 flagged, 0 false positives, and the flagged notes keep
+their lab values.
+
+**Cost.** A false positive deletes real clinical text. That is why one
+high-confidence signal redacts but weak signals need a second, differently
+named one to corroborate, why
+`test_clinical_prose_that_reads_like_an_injection_is_left_alone` exists, and
+why every redaction is counted in the trace, badged in the UI and written to
+the audit trail rather than done silently.
+
+**And the limitation that is not fixed.** The filter runs *after* ranking, so
+planted text still influences which chunks are retrieved - it was embedded and
+indexed before anyone looked at it. Fixing that means filtering at ingest,
+which trades it for a database that no longer matches the uploaded file. The
+trade was made in favour of the record.
+
+**Revisit if.** The corpus grows enough that ranking manipulation is a
+realistic attack rather than a theoretical one, at which point a sanitised
+*copy* for the index - with the original still in the database - is the shape
+that gets both.
+
+---
+
+## 36. The browser gets an httpOnly cookie; the token stays in the body for everything else
+
+**Decision.** `/auth/login` and `/auth/token` set the access token as an
+httpOnly, SameSite=lax cookie *and* return it in the response body. The web app
+stores nothing but a boolean "we think there is a session"; the Swagger UI and
+the operational scripts keep using the bearer header. `get_current_principal`
+accepts either, header first.
+
+**Why.** Sprint 1 put the token in `sessionStorage` and the README has carried
+it as a known limitation since: any script on the page can read it. httpOnly is
+the fix, and it is a real one - the credential becomes something the page's own
+JavaScript cannot touch.
+
+Keeping the body copy is the part worth defending. Removing it would break the
+"Authorize" button in the generated docs and every script that logs in, to
+protect a browser that no longer reads it. Two transports for one credential is
+a small cost; the header wins when both are present, so signing in as someone
+else does not depend on which credential the browser happened to keep.
+
+SameSite=lax is what stands in for CSRF protection. It withholds the cookie
+from cross-site POSTs while still sending it on a top-level navigation back
+into the app. `AUTH_COOKIE_SECURE` is false only because the local demo is
+plain http, and `validate_production_safety` refuses to start with it false
+anywhere else - a cookie sent in the clear is not a protection.
+
+**Cost.** Two auth transports to reason about, and a cross-origin setup that
+now depends on an explicit CORS origin, because a wildcard origin and
+credentials are mutually exclusive.
+
+---
+
+## 37. Logging out revokes the token; the list is a deny-list, not a session table
+
+**Decision.** `/auth/logout` adds the presented token's `jti` to a
+`revoked_tokens` table and clears the cookie. `get_current_principal` checks
+the list on every request. Rows are dropped once the token they name would have
+expired anyway, purged on the next logout rather than by a scheduled job.
+
+**Why.** A logout that only clears a cookie leaves a valid token in the hands
+of whoever captured it, for the rest of its hour. `create_access_token` has
+issued a `jti` since Sprint 1 with a comment saying it was for this.
+
+A deny-list rather than a session table, and the difference is on the failure
+path. A deny-list that is briefly unreachable fails *open* for tokens nobody
+revoked; a session table that is briefly unreachable logs everybody out. With a
+one-hour lifetime and a single local database that window is the same outage
+that takes the rest of the API down anyway - but it is a real weakness and it
+is stated rather than hidden.
+
+**One thing this got wrong first.** The handler originally left its write to
+the request teardown, which runs *after* the response has gone out. So
+`/auth/logout` answered `{"revoked": true}` while the row was still
+uncommitted, and the token it had just given up kept working for about 50ms -
+long enough for the very next request on the same connection. The unit suite
+could not see it: the in-process ASGI transport awaits teardown before
+returning, so it passed. `scripts/smoke_security.py` found it, over a real
+connection against SQL Server, which is what that script is for. The endpoint
+now commits explicitly, and the reason is written at the call site: everywhere
+else the teardown ordering is harmless, and here the caller's next request is
+exactly what the write exists to affect.
+
+**Cost.** One indexed read per authenticated request, and a table that has to
+be trimmed. Revocation is per token, so signing out on one device does not end
+another session - which is the right default and occasionally surprises people.
+
+---
+
+## 38. The login limiter counts in the process, and says so
+
+**Decision.** Failed sign-ins are counted per email+IP in an in-process sliding
+window; past the limit the endpoint returns 429 before looking at the password.
+
+**Why.** Login is the one place an unauthenticated caller can guess, and bcrypt
+at cost 12 makes each guess expensive for the *server* - a few hundred
+concurrent attempts is a denial of service whether or not any of them succeed.
+Refusing before the bcrypt comparison is what makes the limiter cheap.
+
+Keyed on the pair, not on either alone: on email alone anyone who knows an
+address can lock its owner out, and on IP alone a shared NAT locks out a
+building.
+
+In-process is a real limitation, not an oversight. With more than one replica
+the effective limit is the configured one times the replica count, and a
+restart forgives everything. The alternative available today is a write to SQL
+Server per failed guess, which hands an attacker a cheap way to make the
+database do work. Redis arrives in Sprint 7 and is where this belongs.
+
+**Cost.** A limit that is approximate under horizontal scaling, and a bounded
+key map that clears itself wholesale under a spray - because refusing new keys
+instead would let whoever filled it first exempt everyone else from the limit.
+
+---
+
+## 39. The audit trail is readable, and reading it is audited
+
+**Decision.** `GET /audit` and `GET /audit/summary`, admin only, filterable by
+action, actor, resource type, outcome, request id and time. Every read writes
+an `audit_accessed` row recording the filters used.
+
+**Why.** Rows have been written since Sprint 1 and nothing could read them. A
+trail nobody can query satisfies a checklist and answers no question - which is
+worse than not having one, because it looks like a control.
+
+Admin only, with no "my own audit trail" variant: rows name who did what to
+which patient's document, so the endpoint is as sensitive as the documents it
+describes, and a per-user view is a different product decision rather than a
+smaller version of this one.
+
+Auditing the read is the part that is easy to skip. Without it, the single
+action that reveals everything the trail holds is the one action it does not
+record. The row stores the *filters*, not the returned rows - what was looked
+for is the reviewable fact, and copying results into a new row would double the
+trail on every read.
+
+**Cost.** One extra write per read, and a trail that grows with its own use.

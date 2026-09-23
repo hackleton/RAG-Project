@@ -6,8 +6,9 @@
       -> RRF fusion
       -> cross-encoder rerank
       -> top K, hydrated from SQL Server
+      -> injection filter
 
-Two things are deliberate and worth stating.
+Three things are deliberate and worth stating.
 
 **The chunk text returned to the caller comes from SQL Server, not from the
 Qdrant payload.** The index is derived data; the database is the record. If the
@@ -19,6 +20,15 @@ could not be hydrated, which is logged.
 rank in each list, its fused score and its reranker score. Project plan section
 15 requires it, `/search` exposes it, and the Sprint 5 evaluation reads it -
 none of which is possible if fusion is a black box inside the engine.
+
+**The injection filter runs here, not in the callers.** Chat, `/search`, the
+agent's document and knowledge tools and the evaluation harness all retrieve
+through this class, so putting the filter at the exit is the only placement no
+caller can forget - the same argument that puts tool authorisation inside
+`ToolRegistry.dispatch`. It runs last, after hydration, because it edits the
+text a prompt will see and must not change what ranked. The consequence is
+stated in `app.security.injection`: planted text still influences *ranking*,
+because it was embedded and indexed before anyone looked at it.
 """
 
 from __future__ import annotations
@@ -33,11 +43,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.logging import get_logger
 from app.models.document import Document, DocumentChunk
+from app.models.enums import AuditAction
 from app.providers.embedding import EmbeddingProvider
 from app.providers.reranker import Reranker
 from app.providers.vectorstore import AccessFilter, ScoredChunk, VectorStore
 from app.rag import sparse
 from app.rag.fusion import FusedChunk, reciprocal_rank_fusion
+from app.security import injection
+from app.security.audit import record_audit
 from app.security.principal import Principal
 
 logger = get_logger(__name__)
@@ -58,6 +71,9 @@ class RetrievalConfig:
     # single largest avoidable cost in the request.
     rerank_top_n: int = 30
     rerank_score_threshold: float | None = None
+    # Deliberately absent from `with_overrides`: a request may narrow its own
+    # retrieval, it may not switch a security control off.
+    filter_injections: bool = True
 
     def with_overrides(self, overrides: object | None) -> RetrievalConfig:
         """Apply a request's retrieval overrides on top of the deployed defaults.
@@ -94,6 +110,10 @@ class RetrievedChunk:
     rerank_score: float | None = None
     ranks: dict[str, int] = field(default_factory=dict)
     scores: dict[str, float] = field(default_factory=dict)
+    # Signal names that fired on this chunk's stored text. `text` above is the
+    # filtered version; the unedited chunk stays readable through the document
+    # endpoints, which are a deliberate request rather than a retrieval.
+    injection_signals: list[str] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -148,6 +168,7 @@ class HybridRetriever:
 
         selected = ordered[: config.top_k]
         chunks = await self._hydrate(session, selected, rerank_scores)
+        screening = await self._screen(session, principal, chunks, config, query)
 
         trace = {
             "query_terms": len(sparse.tokenize(query)),
@@ -159,6 +180,7 @@ class HybridRetriever:
             "candidates": {name: len(items) for name, items in results.items()},
             "fused_candidates": len(fused),
             "returned": len(chunks),
+            "injection": screening,
             "timings_ms": {
                 **timings,
                 "rerank": rerank_ms,
@@ -254,6 +276,69 @@ class HybridRetriever:
             ordered = kept or ordered[:1]
 
         return ordered, scores
+
+    async def _screen(
+        self,
+        session: AsyncSession,
+        principal: Principal,
+        chunks: list[RetrievedChunk],
+        config: RetrievalConfig,
+        query: str,
+    ) -> dict[str, Any]:
+        """Redact planted instructions out of the chunks, in place.
+
+        The question is scanned too, but never edited. A question cannot
+        escalate anything on its own - the filter and the tool gate see to that
+        - and rewriting what the user typed would break legitimate queries
+        about a document that happens to contain such text. It is recorded
+        because an operator wants to know it was asked.
+        """
+        if not config.filter_injections:
+            return {"enabled": False}
+
+        asked = injection.scan(query)
+        scans: list[injection.Scan] = []
+        redactions = 0
+        for chunk in chunks:
+            result = injection.sanitise(chunk.text)
+            chunk.text = result.text
+            chunk.injection_signals = result.scan.signals if result.scan.flagged else []
+            scans.append(result.scan)
+            redactions += result.redactions
+
+        summary = injection.summarise(scans) | {
+            "enabled": True,
+            "redactions": redactions,
+            "query_signals": asked.signals if asked.flagged else [],
+        }
+        if summary["flagged"] or asked.flagged:
+            # Written on the caller's transaction, so the record commits with
+            # the answer it belongs to. Signal names only - putting the matched
+            # sentence in an audit row would store the payload the filter just
+            # removed.
+            await record_audit(
+                session,
+                action=AuditAction.INJECTION_BLOCKED,
+                principal=principal,
+                resource_type="retrieval",
+                allowed=True,
+                details={
+                    "flagged_chunks": summary["flagged"],
+                    "redactions": redactions,
+                    "signals": summary["signals"],
+                    "query_signals": summary["query_signals"],
+                    "documents": sorted(
+                        {chunk.document_filename for chunk in chunks if chunk.injection_signals}
+                    ),
+                },
+            )
+            logger.warning(
+                "injection_filtered",
+                flagged=summary["flagged"],
+                redactions=redactions,
+                query_flagged=asked.flagged,
+            )
+        return summary
 
     async def _hydrate(
         self,

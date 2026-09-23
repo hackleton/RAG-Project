@@ -12,7 +12,6 @@ import {
   type EvaluationRun,
   type EvaluationRunDetail,
 } from "@/lib/api";
-import { getToken } from "@/lib/session";
 
 /**
  * Evaluation runs: launch one, watch it, and read what failed.
@@ -38,9 +37,7 @@ function Evaluation({ user }: { user: CurrentUser }) {
   const [pending, setPending] = useState(false);
 
   const loadRuns = useCallback(async (signal?: AbortSignal) => {
-    const token = getToken();
-    if (!token) return;
-    const body = await api.evaluations(token, signal);
+    const body = await api.evaluations(signal);
     setRuns(body.runs);
     setSelected((current) => current ?? body.runs[0]?.id ?? null);
   }, []);
@@ -57,10 +54,8 @@ function Evaluation({ user }: { user: CurrentUser }) {
     let timer: ReturnType<typeof setTimeout>;
 
     const tick = async () => {
-      const token = getToken();
-      if (!token) return;
       try {
-        const body = await api.evaluation(token, selected, failuresOnly, controller.signal);
+        const body = await api.evaluation(selected, failuresOnly, controller.signal);
         setDetail(body);
         // A run is a background task, so the page polls until it settles.
         // Stopping on any terminal status means a failed run stops polling too.
@@ -84,12 +79,11 @@ function Evaluation({ user }: { user: CurrentUser }) {
   }, [selected, failuresOnly, loadRuns]);
 
   async function launch() {
-    const token = getToken();
-    if (!token || pending) return;
+    if (pending) return;
     setPending(true);
     setError(null);
     try {
-      const run = await api.runEvaluation(token, { dataset_version: "v1" });
+      const run = await api.runEvaluation({ dataset_version: "v1" });
       setSelected(run.id);
       await loadRuns();
     } catch (caught) {
