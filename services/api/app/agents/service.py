@@ -43,11 +43,10 @@ from app.core.errors import NotFoundError
 from app.core.logging import get_logger
 from app.models.chat import ChatMessage, ChatSession
 from app.models.enums import ChatRole
-from app.models.patient import Patient
 from app.observability.trace import current_trace
 from app.providers.llm import LLMProvider
+from app.security.patient_scope import resolve_patient
 from app.security.principal import Principal
-from app.security.rbac import assert_patient_access
 from app.tools.base import Evidence
 
 logger = get_logger(__name__)
@@ -233,10 +232,7 @@ class AgentService:
     async def _authorise_patient(
         self, session: AsyncSession, principal: Principal, external_id: str
     ) -> None:
-        patient = await session.scalar(select(Patient).where(Patient.external_id == external_id))
-        if patient is None:
-            raise NotFoundError("Unknown patient.", details={"patient_external_id": external_id})
-        assert_patient_access(principal, patient.id)
+        await resolve_patient(session, principal, external_id, surface="agent")
 
     async def _session_for(
         self,

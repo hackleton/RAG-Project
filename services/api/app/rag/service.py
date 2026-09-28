@@ -24,15 +24,14 @@ from app.core.errors import NotFoundError
 from app.core.logging import get_logger
 from app.models.chat import ChatMessage, ChatSession
 from app.models.enums import AuditAction, ChatRole
-from app.models.patient import Patient
 from app.observability.trace import current_trace
 from app.providers.llm import LLMProvider
 from app.rag.prompts import SYSTEM_PROMPT, build_user_prompt, parse_citations
 from app.rag.retriever import HybridRetriever, RetrievalConfig, RetrievedChunk
 from app.security import injection
 from app.security.audit import record_audit
+from app.security.patient_scope import resolve_patient
 from app.security.principal import Principal
-from app.security.rbac import assert_patient_access
 
 logger = get_logger(__name__)
 
@@ -83,7 +82,7 @@ class RagService:
         config: RetrievalConfig | None = None,
     ) -> tuple[list[RetrievedChunk], dict[str, Any]]:
         """Retrieval only - no generation. The experiment and debug path."""
-        patient_id = await self._resolve_patient(session, principal, patient_external_id)
+        patient_id = await self._resolve_patient(session, principal, patient_external_id, "search")
         result = await self._retriever.retrieve(
             session, principal, query, patient_id=patient_id, config=config
         )
@@ -100,7 +99,7 @@ class RagService:
         config: RetrievalConfig | None = None,
     ) -> ChatAnswer:
         started = time.perf_counter()
-        patient_id = await self._resolve_patient(session, principal, patient_external_id)
+        patient_id = await self._resolve_patient(session, principal, patient_external_id, "chat")
 
         retrieval = await self._retriever.retrieve(
             session, principal, question, patient_id=patient_id, config=config
@@ -203,14 +202,15 @@ class RagService:
         ]
 
     async def _resolve_patient(
-        self, session: AsyncSession, principal: Principal, external_id: str | None
+        self,
+        session: AsyncSession,
+        principal: Principal,
+        external_id: str | None,
+        surface: str,
     ) -> uuid.UUID | None:
         if not external_id:
             return None
-        patient = await session.scalar(select(Patient).where(Patient.external_id == external_id))
-        if patient is None:
-            raise NotFoundError("Unknown patient.", details={"patient_external_id": external_id})
-        assert_patient_access(principal, patient.id)
+        patient = await resolve_patient(session, principal, external_id, surface=surface)
         return patient.id
 
     async def _session_for(

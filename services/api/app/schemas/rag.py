@@ -31,8 +31,9 @@ class RetrievalOverrides(BaseModel):
 
 class SearchRequest(BaseModel):
     query: str = Field(min_length=1, max_length=2000)
-    # Narrows the caller's existing scope; it can never widen it.
-    patient_external_id: str | None = None
+    # Narrows the caller's existing scope; it can never widen it. Bounded like
+    # the agent's, because a refusal writes it into a 128-character audit column.
+    patient_external_id: str | None = Field(default=None, max_length=64)
     overrides: RetrievalOverrides | None = None
 
 
@@ -87,7 +88,7 @@ class SearchResponse(BaseModel):
 class ChatRequest(BaseModel):
     question: str = Field(min_length=1, max_length=2000)
     session_id: uuid.UUID | None = None
-    patient_external_id: str | None = None
+    patient_external_id: str | None = Field(default=None, max_length=64)
     overrides: RetrievalOverrides | None = None
 
 

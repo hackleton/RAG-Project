@@ -5,6 +5,7 @@ from __future__ import annotations
 import io
 import uuid
 import zipfile
+from typing import Any
 
 import pytest
 from httpx import AsyncClient
@@ -289,21 +290,27 @@ async def test_a_patient_document_must_be_restricted(
     assert "restricted" in response.json()["error"]["message"]
 
 
-async def test_an_unknown_patient_is_a_404(
-    client: AsyncClient, api: str, clinician_token: str
+async def test_an_unknown_patient_is_refused_like_a_forbidden_one(
+    client: AsyncClient, api: str, clinician_token: str, patients: list[Patient]
 ) -> None:
-    response = await do_upload(
-        client,
-        api,
-        clinician_token,
-        data={
-            "document_type": "clinical_note",
-            "access_level": "restricted",
-            "patient_external_id": "SYN-9999",
-        },
-    )
+    """A 404 here used to tell a caller which patient IDs exist."""
 
-    assert response.status_code == 404
+    async def upload_to(external_id: str) -> Any:
+        return await do_upload(
+            client,
+            api,
+            clinician_token,
+            data={
+                "document_type": "clinical_note",
+                "access_level": "restricted",
+                "patient_external_id": external_id,
+            },
+        )
+
+    unknown, forbidden = await upload_to("SYN-9999"), await upload_to("SYN-0002")
+
+    assert unknown.status_code == forbidden.status_code == 403
+    assert unknown.json()["error"] == forbidden.json()["error"]
 
 
 async def test_an_analyst_cannot_read_a_restricted_document(

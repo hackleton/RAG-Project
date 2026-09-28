@@ -49,7 +49,7 @@ async def upload_document(
     service: ServiceDep,
     file: Annotated[UploadFile, File(description="PDF, DOCX, TXT or MD.")],
     document_type: Annotated[str, Form()] = "clinical_note",
-    patient_external_id: Annotated[str | None, Form()] = None,
+    patient_external_id: Annotated[str | None, Form(max_length=64)] = None,
     access_level: Annotated[AccessLevel, Form()] = AccessLevel.RESTRICTED,
     principal: Principal = Depends(require_roles(Role.CLINICIAN, Role.ADMIN)),
 ) -> UploadResponse:
@@ -86,7 +86,7 @@ async def list_documents(
     session: DbSession,
     service: ServiceDep,
     principal: CurrentUser,
-    patient_external_id: Annotated[str | None, Query()] = None,
+    patient_external_id: Annotated[str | None, Query(max_length=64)] = None,
     document_status: Annotated[DocumentStatus | None, Query(alias="status")] = None,
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
     offset: Annotated[int, Query(ge=0)] = 0,

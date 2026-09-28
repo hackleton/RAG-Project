@@ -186,13 +186,13 @@ async def test_an_unknown_patient_and_a_forbidden_one_look_the_same(
         json={"question": "labs", "patient_external_id": "SYN-9999"},
     )
 
-    assert forbidden.status_code == 403
-    assert unknown.status_code == 404
-    # The status differs for an explicit request, but nothing in either body
-    # says whether the patient exists.
+    # Same status and the same error, field for field. This test used to
+    # assert 403 against 404 and reason that "nothing in either body says
+    # whether the patient exists" - but the status code says it, which is the
+    # whole leak. The 403 also carried the patient's internal UUID.
+    assert forbidden.status_code == unknown.status_code == 403
+    assert forbidden.json()["error"] == unknown.json()["error"]
     assert "SYN-0002" not in forbidden.text
-    for body in (forbidden.json(), unknown.json()):
-        assert "exists" not in body["error"]["message"].lower()
 
 
 async def test_an_unknown_tool_is_denied_rather_than_raising(

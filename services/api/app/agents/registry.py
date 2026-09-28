@@ -44,15 +44,12 @@ from app.models.patient import Patient
 from app.observability.metrics import METRICS
 from app.observability.trace import span
 from app.security.audit import record_audit
+from app.security.patient_scope import NO_SUCH_PATIENT
 from app.security.principal import Principal
 from app.security.rbac import assert_patient_access
 from app.tools.base import Tool, ToolContext, ToolResult
 
 logger = get_logger(__name__)
-
-# One message for "no such patient" and for "not your patient". A caller who
-# can tell the two apart can enumerate which patients exist.
-NO_SUCH_PATIENT = "No accessible patient matches that identifier."
 
 
 @dataclass(frozen=True, slots=True)

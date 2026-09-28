@@ -33,11 +33,10 @@ def assert_role(principal: Principal, allowed: Iterable[Role]) -> None:
 
 def assert_patient_access(principal: Principal, patient_id: uuid.UUID | None) -> None:
     if not principal.can_access_patient(patient_id):
-        # Deliberately does not reveal whether the patient exists.
-        raise PermissionDeniedError(
-            "You do not have access to this patient's data.",
-            details={"patient_id": str(patient_id) if patient_id else None},
-        )
+        # No details. This used to return the patient's internal UUID, which
+        # confirmed the patient existed and handed over its primary key to a
+        # caller who was being refused it. See `app.security.patient_scope`.
+        raise PermissionDeniedError("You do not have access to this patient's data.")
 
 
 def assert_access_level(principal: Principal, level: AccessLevel) -> None:

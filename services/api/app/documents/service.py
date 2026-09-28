@@ -24,8 +24,8 @@ from app.models.patient import Patient
 from app.providers.extraction import SUPPORTED_EXTENSIONS
 from app.providers.storage import DocumentStore, checksum
 from app.security.audit import record_audit
+from app.security.patient_scope import resolve_patient
 from app.security.principal import Principal
-from app.security.rbac import assert_patient_access
 
 logger = get_logger(__name__)
 
@@ -167,12 +167,11 @@ class DocumentService:
         if status is not None:
             query = query.where(Document.status == status)
         if patient_external_id is not None:
-            patient = await session.scalar(
-                select(Patient).where(Patient.external_id == patient_external_id)
+            # Not "unknown means an empty list": an empty 200 for an unknown
+            # patient against a 403 for someone else's is an enumeration oracle.
+            patient = await resolve_patient(
+                session, principal, patient_external_id, surface="documents"
             )
-            if patient is None:
-                return [], 0
-            assert_patient_access(principal, patient.id)
             query = query.where(Document.patient_id == patient.id)
 
         total = await session.scalar(
@@ -237,12 +236,8 @@ class DocumentService:
     ) -> Patient | None:
         if not external_id:
             return None
-        patient = await session.scalar(select(Patient).where(Patient.external_id == external_id))
-        if patient is None:
-            raise NotFoundError("Unknown patient.", details={"patient_external_id": external_id})
         # Uploading *to* a patient is as sensitive as reading from one.
-        assert_patient_access(principal, patient.id)
-        return patient
+        return await resolve_patient(session, principal, external_id, surface="upload")
 
     async def _find_duplicate(
         self, session: AsyncSession, digest: str, patient: Patient | None
