@@ -26,8 +26,8 @@ swapped in later as adapters rather than a rewrite — see
 | 4 | Agentic AI — router, tool gate, SQL tool, synthesis | **Done** |
 | 5 | Evaluation — dataset, retrieval + generation metrics, regression runs | **Done** |
 | 6 | Security — injection filter, cookie auth, revocation, throttling, audit read | **Done** |
-| 7 | Production — Redis cache, tracing, cost/latency dashboard, CI/CD | Next |
-| 8 | Interview hardening — architecture review, failure analysis, demo | Planned |
+| 7 | Production — Redis cache, tracing, cost/latency dashboard, CI/CD | **Done** |
+| 8 | Interview hardening — architecture review, failure analysis, demo | Next |
 
 Every endpoint in the plan now has behaviour behind it; nothing returns `501`
 any more.
@@ -58,9 +58,24 @@ any more.
 - **Read-only database login**: `copilot_readonly` has `db_datareader` plus
   explicit `DENY` on every write and DDL statement. The SQL agent in Sprint 4
   connects as this login, never as the schema owner.
-- **Observability foundation**: one structured JSON log line per request, carrying
-  a correlation id that is echoed to the client as `X-Request-ID` and returned in
-  every error envelope.
+- **Tracing**: every request records a span for each component it passes
+  through: query embedding, both searches, fusion, reranking, hydration, the
+  injection screen, each LLM call and each tool call. The breakdown is self
+  time, so the parts add up to the whole. It is stored on the answer, returned
+  in the response, and written on the request's single structured log line,
+  together with the `X-Request-ID` correlation id.
+- **Cost and latency dashboard** (`/metrics`, admin only): p50/p95/p99 per
+  model, token and cost totals, where the time goes per component, a daily
+  series, and cache hit rates. Durable numbers (read from the message rows) are
+  shown separately from process counters (since the last restart).
+- **Caching**: query embeddings and rankings are cached in Redis. The ranking
+  key includes the caller's access filter, so a warm entry can never be served
+  to someone with a narrower scope, and only chunk ids are cached, never text.
+  Indexing moves a generation counter, so a cached ranking cannot outlive the
+  index it describes. Answers are deliberately not cached
+  ([decision 42](docs/decisions.md)). A Redis outage costs latency and nothing
+  else: a breaker stops the client calling a dead cache
+  ([decision 41](docs/decisions.md)).
 - **Frontend**: login, session gate, and a dashboard showing the caller's role,
   resolved patient scope, and live API health.
 - **Document pipeline**: upload → local storage → extraction (PDF/DOCX/TXT/MD)
@@ -103,7 +118,14 @@ any more.
 - **Experiment sweeps**: the whole dataset under eight retrieval
   configurations — vector-only, BM25-only, hybrid, reranker on and off, top-K
   and candidate-pool variants — written up as a Markdown comparison with each
-  experiment's hypothesis, in `evaluation/experiments/`.
+  experiment's hypothesis, in `evaluation/experiments/`. Caching on vs off is
+  measured the same way.
+- **CI/CD**: every push runs lint, types and the unit suite, then boots the
+  real stack. On that stack it verifies migrations up and down, the read-only
+  login, ingestion and indexing, the retrieval, agent, SQL and security smoke
+  checks, and the evaluation gate. It also stops Redis mid-run to prove the API
+  keeps serving, checks the ranking cache is scoped and invalidated, and builds
+  the production images.
 
 ## Quick start
 
@@ -129,6 +151,7 @@ Then sign in and open **Ask the documents** for grounded RAG chat, or
 | Service | URL |
 | --- | --- |
 | Web app | http://localhost:3000 |
+| Cost and latency dashboard (admin) | http://localhost:3000/metrics |
 | API docs (Swagger) | http://localhost:8000/docs |
 | Liveness / readiness | http://localhost:8000/health , `/health/ready` |
 | SQL Server | `localhost:1433` |
@@ -217,11 +240,57 @@ regenerating produces a diff:
 docker compose run --rm api python scripts/generate_evaluation_dataset.py
 ```
 
+Caching on vs off (plan section 14). Every quality metric must come out
+identical in both arms, because a cached ranking is the same ranking; only
+latency may move. `none` switches the cache off, so the harness takes the same
+code path with every read missing:
+
+```bash
+docker compose run --rm -e LLM_PROVIDER=echo -e CACHE_BACKEND=none api python scripts/run_evaluation.py
+```
+
+Check the cache and telemetry against the running stack. This uploads a
+document to prove that indexing invalidates cached rankings, so run it after an
+evaluation rather than before one:
+
+```bash
+docker compose run --rm api python scripts/smoke_observability.py
+```
+
 Open a SQL prompt as the restricted agent login (writes should be refused):
 
 ```bash
 docker compose exec mssql bash -c "/opt/mssql-tools18/bin/sqlcmd -S localhost -U copilot_readonly -P \"\$MSSQL_READONLY_PASSWORD\" -d copilot -C"
 ```
+
+## Running it like production
+
+`docker-compose.prod.yml` is an overlay on the same compose file. It builds the
+`runtime` images: no dev tooling, no source mount, no `--reload`, two workers,
+and a non-root user. It also stops publishing the datastore ports and turns on
+Redis persistence. Migrations are a separate step, because several workers
+racing to migrate one database on boot is a failure mode, not a convenience:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.prod.yml run --rm api alembic upgrade head
+```
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+```
+
+The overlay sets `APP_ENV=production`, and the settings validator then refuses
+to start with the development JWT secret, with an insecure cookie, with the
+injection filter off, or with the SQL tool on the application login. Set
+`JWT_SECRET_KEY` to a real value before trying it. Because the cookie is
+`secure`, the app needs HTTPS in front of it.
+
+This is the same artefacts and configuration shape a deployment would use, not
+a deployment. What's missing is a list, not a rewrite: TLS termination, a
+secret manager, database backups, log shipping, horizontal scaling behind a
+load balancer, and an exporter for the process metrics
+([decision 45](docs/decisions.md)). CI builds these images on every push, so a
+broken production Dockerfile fails there rather than during a deploy.
 
 ## Architecture
 
@@ -233,11 +302,16 @@ docker compose exec mssql bash -c "/opt/mssql-tools18/bin/sqlcmd -S localhost -U
                        FastAPI (async, Pydantic v2)
               auth | documents | chat | search | agents | evaluations
                                   |
+             span collector per request (latency by component)
+                                  |
            +----------------------+----------------------+
            |                      |                      |
       RAG service           Agent service           Evaluation
       BM25 + vector         router + tools          metrics + runs
       + RRF + rerank        (docs / SQL / KB)
+           |                      |
+         Redis  <- query embeddings, rankings keyed on the caller's scope,
+           |       login counters. Fails open; never holds document text.
            |                      |
         Qdrant              SQL Server  (SELECT-only login for the SQL tool)
    dense + sparse, one           |
@@ -259,6 +333,8 @@ Local components and what they stand in for:
 | Fusion | RRF in the application | Azure AI Search RRF |
 | Reranking | local cross-encoder | Azure AI Search semantic ranker |
 | Generation | Ollama, or a deterministic stub | Azure OpenAI chat deployment |
+| Cache and rate control | Redis (or in-process, or off) | Azure Cache for Redis |
+| Tracing and metrics | in-process spans, stored with each answer | Application Insights |
 
 The stub (`LLM_PROVIDER=echo`) exists so the whole pipeline stays end-to-end
 testable in CI, where no model is available.
@@ -279,6 +355,8 @@ services/api/           FastAPI service
   app/agents/           planner, tool registry and authorisation gate, synthesis
   app/tools/            the tools themselves, and the SQL guard
   app/evaluation/       dataset, metrics, grading, harness, experiment sweeps
+  app/cache/            backends, scope-keyed cache keys, embedding + ranking caches
+  app/observability/    span collector, process counters, the LLM timing wrapper
   alembic/              migrations
   tests/                pytest suite
 infrastructure/docker/  SQL Server bootstrap (database, logins, DENYs)
@@ -308,7 +386,19 @@ Recorded in full in [docs/decisions.md](docs/decisions.md). The short version:
   stays fast enough to run constantly; `alembic check` in CI catches the drift
   that SQLite cannot see.
 - **Health is split into liveness and readiness.** A database blip should not
-  cause an orchestrator to restart a process that is working fine.
+  cause an orchestrator to restart a process that is working fine. The cache is
+  reported by readiness but does not decide it, because pulling a replica over a
+  cache outage would turn a latency problem into an outage.
+- **A cache key that omits the caller's scope is an access-control bypass.**
+  The ranking key is derived from every field of the access filter, not from a
+  hand-written list, so a scoping field added later is included automatically.
+- **Answers are not cached.** A response cache would help most against a 30 s
+  generation, and it is also the one that would hold generated text from
+  restricted documents outside the audited database, and survive corrections
+  to the documents it cites.
+- **Failing open is not enough.** A dead Redis that is still being called adds
+  its timeout to every request. A breaker stops the calls: measured at 251 ms on
+  the first request of an outage, then 0.07 ms per request after that.
 
 ## Known limitations
 
@@ -323,10 +413,24 @@ Recorded in full in [docs/decisions.md](docs/decisions.md). The short version:
   because it is a boundary. What actually stops a caller reading another
   patient's record is the pre-search access filter, which holds whatever a
   document says.
-- The failed-login limiter counts in the process, so with more than one API
-  replica the effective limit is the configured one times the replica count and
-  a restart forgives everything ([decision 38](docs/decisions.md)). Redis in
-  Sprint 7 is where it belongs.
+- The failed-login limiter now counts in Redis, so every replica sees the same
+  attempts ([decision 43](docs/decisions.md)). The in-process counter still
+  runs underneath it, so during a cache outage the limit falls back to
+  per-replica rather than disappearing.
+- **The process metrics reset on restart and are per-replica.** The dashboard
+  labels them with the process start time for that reason. Durable latency and
+  cost come from the message rows; request volume and error rate do not have a
+  durable home until they are exported to a time-series store
+  ([decision 44](docs/decisions.md)).
+- **Tracing stops at the process boundary.** Spans are collected in-process and
+  stored on the answer, which is enough for per-component latency but carries
+  no context across services ([decision 40](docs/decisions.md)).
+- **`reindex.py --all` does not remove points whose document no longer
+  exists.** Rebuilding the database without dropping the Qdrant collection
+  leaves the old points in the index. They take top-K slots, then fail
+  hydration and are dropped. Measured: recall@5 fell from 0.940 to 0.908 and
+  nothing errored. Drop the collection before a full rebuild until this is
+  fixed.
 - Token revocation is a deny-list, so it fails *open* for tokens nobody revoked
   if the database is briefly unreachable — the inverse of a session table,
   chosen deliberately ([decision 37](docs/decisions.md)).

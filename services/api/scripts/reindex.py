@@ -27,6 +27,8 @@ import sys
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.cache.backend import build_cache
+from app.cache.ranking import RankingCache
 from app.core.config import get_settings
 from app.core.db import dispose_engine, get_sessionmaker, init_engine
 from app.models import Document, DocumentStatus
@@ -71,6 +73,15 @@ async def main() -> int:
     settings = get_settings()
     embedder = build_embedding_provider(settings)
     store = QdrantVectorStore(settings)
+    # The API caches rankings by index generation. A reindex from the command
+    # line changes the index the API is serving, so it has to bump the same
+    # counter - otherwise a running API keeps handing out the old ranking
+    # until the TTL expires, and the only symptom is a query that stubbornly
+    # misses a document somebody can see in the database.
+    cache = build_cache(settings)
+    ranking_cache = RankingCache(
+        cache, prefix=settings.cache_prefix, ttl_seconds=settings.cache_ranking_ttl_seconds
+    )
 
     init_engine(settings)
     try:
@@ -82,10 +93,13 @@ async def main() -> int:
         )
         async with get_sessionmaker()() as session:
             count = await reindex(
-                session, Indexer(store=store, embedder=embedder), everything=arguments.everything
+                session,
+                Indexer(store=store, embedder=embedder, ranking_cache=ranking_cache),
+                everything=arguments.everything,
             )
         indexed = await store.count()
     finally:
+        await cache.close()
         await store.close()
         await dispose_engine()
 

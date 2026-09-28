@@ -25,6 +25,7 @@ from app.core.logging import get_logger
 from app.models.chat import ChatMessage, ChatSession
 from app.models.enums import AuditAction, ChatRole
 from app.models.patient import Patient
+from app.observability.trace import current_trace
 from app.providers.llm import LLMProvider
 from app.rag.prompts import SYSTEM_PROMPT, build_user_prompt, parse_citations
 from app.rag.retriever import HybridRetriever, RetrievalConfig, RetrievedChunk
@@ -131,6 +132,17 @@ class RagService:
         citations = self._citations(answer_text, retrieval.chunks)
         latency_ms = int((time.perf_counter() - started) * 1000)
 
+        # Per-component latency, read from the request's span collector rather
+        # than re-timed here: the same numbers the log line carries, stored on
+        # the row so the cost dashboard and the evaluation harness read what
+        # was actually served.
+        trace = current_trace()
+        timing: dict[str, Any] = trace.to_dict() if trace is not None else {}
+        answer_trace: dict[str, Any] = {**retrieval.trace, "model": completion.model}
+        for key in ("components_ms", "spans"):
+            if key in timing:
+                answer_trace[key] = timing[key]
+
         chat_session = await self._session_for(session, principal, session_id, question, patient_id)
         session.add(ChatMessage(session_id=chat_session.id, role=ChatRole.USER, content=question))
         message = ChatMessage(
@@ -138,7 +150,7 @@ class RagService:
             role=ChatRole.ASSISTANT,
             content=answer_text,
             citations=[_citation_payload(citation) for citation in citations],
-            retrieval_trace={**retrieval.trace, "model": completion.model},
+            retrieval_trace=answer_trace,
             prompt_tokens=completion.prompt_tokens,
             completion_tokens=completion.completion_tokens,
             latency_ms=latency_ms,
@@ -161,7 +173,7 @@ class RagService:
             answer=answer_text,
             citations=citations,
             sources=retrieval.chunks,
-            trace=retrieval.trace,
+            trace=answer_trace,
             latency_ms=latency_ms,
             prompt_tokens=completion.prompt_tokens,
             completion_tokens=completion.completion_tokens,

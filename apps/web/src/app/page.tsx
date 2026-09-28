@@ -79,14 +79,22 @@ function Dashboard({ user }: { user: CurrentUser }) {
           >
             Evaluation
           </Link>
-          {/* The API refuses this for other roles; hiding it is a courtesy. */}
+          {/* The API refuses these for other roles; hiding them is a courtesy. */}
           {user.role === "admin" ? (
-            <Link
-              href="/audit"
-              className="rounded-md border border-border px-3 py-1.5 text-sm"
-            >
-              Audit
-            </Link>
+            <>
+              <Link
+                href="/metrics"
+                className="rounded-md border border-border px-3 py-1.5 text-sm"
+              >
+                Metrics
+              </Link>
+              <Link
+                href="/audit"
+                className="rounded-md border border-border px-3 py-1.5 text-sm"
+              >
+                Audit
+              </Link>
+            </>
           ) : null}
           <Link
             href="/agent"

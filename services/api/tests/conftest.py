@@ -21,7 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.agents.factory import build_registry
 from app.agents.registry import ToolRegistry
 from app.core import db as db_module
-from app.core.config import AppEnv, EmbeddingProviderName, Settings
+from app.core.config import AppEnv, CacheBackendName, EmbeddingProviderName, Settings
 from app.core.config import LLMProvider as LLMProviderName
 from app.core.security import hash_password
 from app.main import create_app
@@ -59,6 +59,12 @@ def settings(tmp_path_factory: pytest.TempPathFactory) -> Settings:
         embedding_provider=EmbeddingProviderName.HASH,
         embedding_dimensions=64,
         llm_provider=LLMProviderName.ECHO,
+        # The in-process cache, not Redis: the suite must not need a container,
+        # and it must not quietly pass because every cache read failed open.
+        # `MemoryCache` has real expiry and real eviction, so the cache-aware
+        # paths - key construction, the generation counter, the login limiter -
+        # are genuinely exercised rather than skipped.
+        cache_backend=CacheBackendName.MEMORY,
         # On by default here although it is off by default in a deployment:
         # the guard is the part of the agent most worth testing, and a test
         # suite that leaves it switched off tests nothing about it.

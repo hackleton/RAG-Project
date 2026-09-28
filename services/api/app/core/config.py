@@ -48,6 +48,16 @@ class EmbeddingProviderName(StrEnum):
     HASH = "hash"
 
 
+class CacheBackendName(StrEnum):
+    REDIS = "redis"
+    # Per-process and bounded. What the test suite runs, and what makes the
+    # section 14 "caching on vs off" experiment runnable without Redis.
+    MEMORY = "memory"
+    # Every read misses. The "off" arm of that experiment, and the setting a
+    # deployment uses to take the cache out of the picture while debugging.
+    NONE = "none"
+
+
 class PlannerName(StrEnum):
     """Which router decides the agent's tool calls."""
 
@@ -123,6 +133,29 @@ class Settings(BaseSettings):
     database_max_overflow: int = 10
     database_echo: bool = False
     redis_url: str = "redis://localhost:6379/0"
+
+    # --- Cache (project plan section 7) -----------------------------------
+    # What is cached and why is argued in app/cache/__init__.py; answers are
+    # deliberately not. These are configuration rather than constants so the
+    # section 14 "caching on vs off" experiment is a setting, not a branch.
+    cache_backend: CacheBackendName = CacheBackendName.REDIS
+    # Namespaces every key, so two deployments can share one Redis without
+    # one of them reading the other's rankings.
+    cache_prefix: str = "hic"
+    cache_embeddings: bool = True
+    cache_rankings: bool = True
+    # A query vector is valid until the model changes, and the model is in the
+    # key - so this TTL is about reclaiming memory, not about correctness.
+    cache_embedding_ttl_seconds: int = 86400
+    # A ranking is invalidated by generation, not by expiry (see
+    # app/cache/ranking.py). The TTL is what reclaims orphaned generations.
+    cache_ranking_ttl_seconds: int = 300
+    # Deliberately sub-second. A cache lookup that takes longer than the work
+    # it saves is not a cache, and an unreachable Redis must not add seconds
+    # to every request while it is down.
+    cache_timeout_seconds: float = 0.25
+    cache_breaker_failures: int = 3
+    cache_breaker_cooldown_seconds: float = 30.0
 
     # --- Vector store (stands in for the Azure AI Search index) ----------
     qdrant_url: AnyHttpUrl = AnyHttpUrl("http://localhost:6333")
@@ -216,6 +249,20 @@ class Settings(BaseSettings):
     @property
     def is_local(self) -> bool:
         return self.app_env in (AppEnv.LOCAL, AppEnv.CI)
+
+    @property
+    def cache_enabled(self) -> bool:
+        return self.cache_backend is not CacheBackendName.NONE
+
+    @property
+    def shared_cache(self) -> bool:
+        """Whether the cache is visible to every replica.
+
+        The failed-login limiter and the ranking cache both mean something
+        weaker without this, so the metrics endpoint reports it rather than
+        leaving an operator to infer it from the backend name.
+        """
+        return self.cache_backend is CacheBackendName.REDIS
 
     @property
     def max_upload_bytes(self) -> int:

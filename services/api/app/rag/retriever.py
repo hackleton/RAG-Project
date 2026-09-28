@@ -2,13 +2,14 @@
 
     query
       -> access filter built from the Principal (never from the request body)
+      -> ranking cache, keyed on that filter          [hit: skip to hydrate]
       -> dense search  +  sparse BM25 search, each over the candidate pool
       -> RRF fusion
       -> cross-encoder rerank
       -> top K, hydrated from SQL Server
       -> injection filter
 
-Three things are deliberate and worth stating.
+Four things are deliberate and worth stating.
 
 **The chunk text returned to the caller comes from SQL Server, not from the
 Qdrant payload.** The index is derived data; the database is the record. If the
@@ -29,6 +30,14 @@ caller can forget - the same argument that puts tool authorisation inside
 text a prompt will see and must not change what ranked. The consequence is
 stated in `app.security.injection`: planted text still influences *ranking*,
 because it was embedded and indexed before anyone looked at it.
+
+**The ranking cache is keyed on the access filter, and hydration still runs.**
+Skipping the searches is safe only because the caller's scope is inside the
+key - a cache keyed on the query alone would let the first caller's results be
+served to the next one, which is the pre-search filter defeated by an
+optimisation. Only chunk ids and scores are cached; the text still comes from
+SQL Server on every request, so the database remains the record and an edited
+chunk is never served stale. See `app.cache.ranking`.
 """
 
 from __future__ import annotations
@@ -41,12 +50,14 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.cache.ranking import CachedRanking, RankingCache
 from app.core.logging import get_logger
 from app.models.document import Document, DocumentChunk
 from app.models.enums import AuditAction
+from app.observability.trace import span
 from app.providers.embedding import EmbeddingProvider
 from app.providers.reranker import Reranker
-from app.providers.vectorstore import AccessFilter, ScoredChunk, VectorStore
+from app.providers.vectorstore import AccessFilter, ScoredChunk, VectorStore, admits
 from app.rag import sparse
 from app.rag.fusion import FusedChunk, reciprocal_rank_fusion
 from app.security import injection
@@ -130,11 +141,13 @@ class HybridRetriever:
         embedder: EmbeddingProvider,
         reranker: Reranker,
         config: RetrievalConfig,
+        ranking_cache: RankingCache | None = None,
     ) -> None:
         self._store = store
         self._embedder = embedder
         self._reranker = reranker
         self._config = config
+        self._ranking_cache = ranking_cache
 
     async def retrieve(
         self,
@@ -159,16 +172,36 @@ class HybridRetriever:
             exclude_patient_documents=exclude_patient_documents,
         )
 
-        results, timings = await self._search(query, config, access)
-        fused = reciprocal_rank_fusion(results, k=config.rrf_k)
+        cached, generation = await self._cached_ranking(query, config, access)
+        timings: dict[str, float] = {}
 
-        rerank_started = time.perf_counter()
-        ordered, rerank_scores = await self._rerank(query, fused, config)
-        rerank_ms = round((time.perf_counter() - rerank_started) * 1000, 2)
+        if cached is not None:
+            selected = cached.selected
+            rerank_scores = cached.rerank_scores
+            candidates = cached.candidates
+            fused_candidates = cached.fused_candidates
+        else:
+            results, timings = await self._search(query, config, access)
 
-        selected = ordered[: config.top_k]
-        chunks = await self._hydrate(session, selected, rerank_scores)
-        screening = await self._screen(session, principal, chunks, config, query)
+            with span("retrieval.fuse", strategies=len(results)):
+                fused = reciprocal_rank_fusion(results, k=config.rrf_k)
+
+            rerank_started = time.perf_counter()
+            with span("retrieval.rerank", candidates=min(len(fused), config.rerank_top_n)):
+                ordered, rerank_scores = await self._rerank(query, fused, config)
+            timings["rerank"] = round((time.perf_counter() - rerank_started) * 1000, 2)
+
+            selected = ordered[: config.top_k]
+            candidates = {name: len(items) for name, items in results.items()}
+            fused_candidates = len(fused)
+            await self._store_ranking(
+                query, config, access, generation, selected, rerank_scores, candidates, len(fused)
+            )
+
+        with span("retrieval.hydrate", selected=len(selected)):
+            chunks = await self._hydrate(session, selected, rerank_scores, access)
+        with span("retrieval.screen", chunks=len(chunks)):
+            screening = await self._screen(session, principal, chunks, config, query)
 
         trace = {
             "query_terms": len(sparse.tokenize(query)),
@@ -177,13 +210,20 @@ class HybridRetriever:
             "top_k": config.top_k,
             "rrf_k": config.rrf_k,
             "reranker": self._reranker.name if config.rerank else "disabled",
-            "candidates": {name: len(items) for name, items in results.items()},
-            "fused_candidates": len(fused),
+            "candidates": candidates,
+            "fused_candidates": fused_candidates,
             "returned": len(chunks),
             "injection": screening,
+            "cache": {
+                "ranking": (
+                    "disabled"
+                    if self._ranking_cache is None
+                    else ("hit" if cached is not None else "miss")
+                ),
+                "generation": generation,
+            },
             "timings_ms": {
                 **timings,
-                "rerank": rerank_ms,
                 "total": round((time.perf_counter() - started) * 1000, 2),
             },
         }
@@ -225,6 +265,51 @@ class HybridRetriever:
             document_types=document_types,
         )
 
+    async def _cached_ranking(
+        self, query: str, config: RetrievalConfig, access: AccessFilter
+    ) -> tuple[CachedRanking | None, int]:
+        """Look for a ranking this caller's scope is entitled to reuse.
+
+        Two reads rather than one: the generation counter, then the entry keyed
+        on it. That is the price of invalidating a whole generation with a
+        single INCR instead of scanning Redis for keys to delete, and it buys
+        two vector searches and a cross-encoder pass.
+        """
+        if self._ranking_cache is None:
+            return None, 0
+        with span("retrieval.cache") as record:
+            generation = await self._ranking_cache.generation()
+            cached = await self._ranking_cache.get(
+                query=query, config=config, access=access, generation=generation
+            )
+            record.attributes["hit"] = cached is not None
+            record.attributes["generation"] = generation
+        return cached, generation
+
+    async def _store_ranking(
+        self,
+        query: str,
+        config: RetrievalConfig,
+        access: AccessFilter,
+        generation: int,
+        selected: list[FusedChunk],
+        rerank_scores: dict[uuid.UUID, float],
+        candidates: dict[str, int],
+        fused_candidates: int,
+    ) -> None:
+        if self._ranking_cache is None:
+            return
+        await self._ranking_cache.put(
+            query=query,
+            config=config,
+            access=access,
+            generation=generation,
+            selected=selected,
+            rerank_scores=rerank_scores,
+            candidates=candidates,
+            fused_candidates=fused_candidates,
+        )
+
     async def _search(
         self, query: str, config: RetrievalConfig, access: AccessFilter
     ) -> tuple[dict[str, list[ScoredChunk]], dict[str, float]]:
@@ -233,17 +318,21 @@ class HybridRetriever:
 
         if config.mode in ("hybrid", "dense"):
             started = time.perf_counter()
-            vector = await self._embedder.embed_query(query)
-            results[DENSE] = await self._store.search_dense(
-                vector, limit=config.candidate_pool, access=access
-            )
+            with span("retrieval.dense", pool=config.candidate_pool) as record:
+                vector = await self._embedder.embed_query(query)
+                results[DENSE] = await self._store.search_dense(
+                    vector, limit=config.candidate_pool, access=access
+                )
+                record.attributes["candidates"] = len(results[DENSE])
             timings["dense"] = round((time.perf_counter() - started) * 1000, 2)
 
         if config.mode in ("hybrid", "sparse"):
             started = time.perf_counter()
-            results[SPARSE] = await self._store.search_sparse(
-                sparse.encode_query(query), limit=config.candidate_pool, access=access
-            )
+            with span("retrieval.sparse", pool=config.candidate_pool) as record:
+                results[SPARSE] = await self._store.search_sparse(
+                    sparse.encode_query(query), limit=config.candidate_pool, access=access
+                )
+                record.attributes["candidates"] = len(results[SPARSE])
             timings["sparse"] = round((time.perf_counter() - started) * 1000, 2)
 
         return results, timings
@@ -345,8 +434,18 @@ class HybridRetriever:
         session: AsyncSession,
         selected: list[FusedChunk],
         rerank_scores: dict[uuid.UUID, float],
+        access: AccessFilter,
     ) -> list[RetrievedChunk]:
-        """Load the authoritative text and document metadata from SQL Server."""
+        """Load the authoritative text and document metadata from SQL Server.
+
+        And re-apply the caller's scope to what the database says, not to what
+        the index said. The pre-search filter ran over Qdrant's payload copy of
+        `access_level` and `patient_id`; a ranking can outlive that copy - a
+        cached one whose invalidation failed open, or an index not yet re-synced
+        after a document was tightened. On a consistent index this drops
+        nothing, which is why it costs no recall; on an inconsistent one it is
+        the difference between a stale ranking and a disclosure.
+        """
         if not selected:
             return []
 
@@ -369,6 +468,21 @@ class HybridRetriever:
                 logger.warning("retrieved_chunk_missing", chunk_id=str(fused.chunk_id))
                 continue
             chunk, document = record
+            if not admits(
+                access,
+                access_level=chunk.access_level.value,
+                patient_id=chunk.patient_id,
+                document_id=document.id,
+                document_type=document.document_type,
+            ):
+                # Ids only: the point of dropping it is that its text must not
+                # travel any further, including into a log line.
+                logger.warning(
+                    "retrieved_chunk_not_admitted",
+                    chunk_id=str(fused.chunk_id),
+                    document_id=str(document.id),
+                )
+                continue
             hydrated.append(
                 RetrievedChunk(
                     chunk_id=chunk.id,

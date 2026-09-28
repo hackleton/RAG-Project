@@ -205,6 +205,40 @@ jobs:
             exit 1
           fi
 
+      # A cache is an optimisation, so a cache outage must cost latency and
+      # nothing else. This is the one property the unit suite cannot check:
+      # `MemoryCache` cannot be unplugged. Stopping the container is the honest
+      # version of the test.
+      - name: The API keeps serving with Redis stopped
+        env:
+          LOGIN: '{"email":"clinician@example.com","password":"Clinician123!local"}'
+        run: |
+          set -e
+          docker compose stop redis
+          # Started again on any exit, not just the happy one: under `set -e` a
+          # failed check would otherwise leave Redis down for every step after
+          # it, and the report would blame whichever of them failed first.
+          trap 'docker compose start redis' EXIT
+          TOKEN=$(curl -fsS -X POST http://localhost:8000/api/v1/auth/login -H 'Content-Type: application/json' -d "$LOGIN" | python -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
+          for attempt in 1 2 3; do
+            code=$(curl -s -o /dev/null -w '%{http_code}' -X POST http://localhost:8000/api/v1/search -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d '{"query":"metformin dose"}')
+            test "$code" = "200" || { echo "search returned $code with the cache down"; exit 1; }
+          done
+          # The readiness probe must report the outage without failing on it:
+          # taking a replica out of the load balancer over a cache is backwards.
+          curl -fsS http://localhost:8000/health/ready | python -c "import sys,json; r=json.load(sys.stdin); assert r['status'] == 'ok', r; assert r['dependencies']['cache']['status'] == 'error', r; print('OK: cache reported down, service still ready')"
+          docker compose start redis
+          # Wait for the running API to notice, rather than assuming it has.
+          # Its breaker holds for a cooldown after the last failure, and the
+          # next step expects a warm cache - "probably recovered by now" is how
+          # a deterministic check becomes a flaky one.
+          for attempt in $(seq 1 30); do
+            status=$(curl -fsS http://localhost:8000/health/ready | python -c "import sys,json; print(json.load(sys.stdin)['dependencies']['cache']['status'])")
+            if [ "$status" = "ok" ]; then echo "cache recovered after ${attempt} attempt(s)"; break; fi
+            if [ "$attempt" -eq 30 ]; then echo "the cache never recovered"; exit 1; fi
+            sleep 2
+          done
+
       # The whole of project plan section 13, against the real stack: retrieval
       # metrics, generation metrics, latency percentiles and the security rates.
       # `--gate` fails the build when a gated metric drops further than its
@@ -218,6 +252,20 @@ jobs:
       - name: Evaluation metrics have not regressed
         run: |
           docker compose run --rm api python scripts/run_evaluation.py --gate             --baseline /evaluation/reports/baseline-hash.json
+
+      # Last, because it uploads a document to prove that indexing invalidates
+      # a cached ranking - and a new document in the index would move the
+      # retrieval metrics the step above just gated.
+      - name: Rankings are cached, scoped, invalidated, and reported
+        run: docker compose run --rm api python scripts/smoke_observability.py
+
+      # The production overlay uses different build targets and drops the
+      # source mount, so nothing about it is exercised by the steps above. A
+      # deployment image that does not build is found here rather than during
+      # a deploy.
+      - name: The production images build
+        run: |
+          docker compose -f docker-compose.yml -f docker-compose.prod.yml build api web
 
       - name: Dump logs on failure
         if: failure()

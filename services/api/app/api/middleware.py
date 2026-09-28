@@ -12,10 +12,13 @@ from starlette.requests import Request
 from starlette.responses import Response
 
 from app.core.logging import get_logger, request_id_ctx, user_id_ctx
+from app.observability.metrics import METRICS
+from app.observability.trace import clear_trace, start_trace
 
 logger = get_logger(__name__)
 
 REQUEST_ID_HEADER = "X-Request-ID"
+HEALTH_PREFIX = "/health"
 
 
 class RequestContextMiddleware(BaseHTTPMiddleware):
@@ -25,6 +28,15 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
     a gateway continues through the API; otherwise one is minted. The id is
     echoed on every response, including error envelopes, which is what makes a
     user-reported failure findable in the logs.
+
+    It also opens the span collector (project plan section 15), so anything
+    downstream can time itself without being handed a tracer, and closes it
+    afterwards so a span can never leak from one request into the next.
+
+    Health probes are counted out of the process metrics as well as logged at
+    debug. A liveness check every ten seconds is most of the traffic on an idle
+    deployment, and a p50 that is mostly probe would describe nothing anybody
+    wants to know.
     """
 
     async def dispatch(
@@ -36,6 +48,9 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
         user_token = user_id_ctx.set(None)
         structlog.contextvars.clear_contextvars()
 
+        is_probe = request.url.path.startswith(HEALTH_PREFIX)
+        trace = start_trace(f"{request.method} {request.url.path}")
+
         start = time.perf_counter()
         status_code = 500
         try:
@@ -45,14 +60,20 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
             return response
         finally:
             duration_ms = round((time.perf_counter() - start) * 1000, 2)
-            # Health probes would otherwise dominate the log volume.
-            level = logger.debug if request.url.path.startswith("/health") else logger.info
+            components = trace.self_ms()
+            if not is_probe:
+                METRICS.record_request(status_code=status_code, duration_ms=duration_ms)
+            level = logger.debug if is_probe else logger.info
             level(
                 "http_request",
                 method=request.method,
                 path=request.url.path,
                 status_code=status_code,
                 duration_ms=duration_ms,
+                # One line per request carrying where the time went, so the
+                # breakdown survives even for requests that never persist a row.
+                **({"components_ms": components} if components else {}),
             )
+            clear_trace()
             request_id_ctx.reset(token)
             user_id_ctx.reset(user_token)

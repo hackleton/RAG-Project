@@ -41,6 +41,8 @@ from app.core.errors import PermissionDeniedError
 from app.core.logging import get_logger
 from app.models.enums import AuditAction, Role
 from app.models.patient import Patient
+from app.observability.metrics import METRICS
+from app.observability.trace import span
 from app.security.audit import record_audit
 from app.security.principal import Principal
 from app.security.rbac import assert_patient_access
@@ -186,8 +188,11 @@ class ToolRegistry:
             patient_id=patient_id,
             patient_external_id=external_id,
         )
-        result = await spec.tool.run(context, arguments)
+        with span(f"tool.{spec.name}", patient_scoped=external_id is not None) as record:
+            result = await spec.tool.run(context, arguments)
+            record.attributes["evidence"] = len(result.evidence)
         duration_ms = int((time.perf_counter() - started) * 1000)
+        METRICS.record_tool(spec.name, ok=True)
 
         await record_audit(
             session,
@@ -240,6 +245,7 @@ class ToolRegistry:
             allowed=False,
             details={"reason": code, "message": message},
         )
+        METRICS.record_tool(call.name, ok=False)
         logger.warning("tool_denied", tool=call.name, reason=code)
         return DispatchOutcome(
             call=call,

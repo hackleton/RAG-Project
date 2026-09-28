@@ -21,7 +21,10 @@ class ErrorEnvelope(BaseModel):
 
 
 class DependencyHealth(BaseModel):
-    status: Literal["ok", "degraded", "error"]
+    # "disabled" is a real state, not a failure: a deployment that runs with
+    # CACHE_BACKEND=none is configured that way on purpose, and reporting it
+    # as an error would train people to ignore the readiness payload.
+    status: Literal["ok", "degraded", "error", "disabled"]
     latency_ms: float | None = None
     detail: str | None = None
 

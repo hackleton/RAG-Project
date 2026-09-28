@@ -39,7 +39,7 @@ from app.models.user import User
 from app.schemas.auth import CurrentUserResponse, LoginRequest, LogoutResponse, TokenResponse
 from app.security import tokens
 from app.security.audit import record_audit, record_audit_independent
-from app.security.throttle import LoginThrottle
+from app.security.throttle import LoginThrottle, SharedLoginThrottle
 
 logger = get_logger(__name__)
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -49,16 +49,26 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 _DUMMY_HASH = hash_password("timing-equalisation-placeholder", rounds=12)
 
 
-def _throttle(request: Request, settings: Settings) -> LoginThrottle:
-    """The app's shared throttle, created on first use.
+def _throttle(request: Request, settings: Settings) -> SharedLoginThrottle:
+    """The app's throttle, created on first use.
 
     On `app.state` rather than at module scope so the test suite - which builds
     several apps in one process - does not carry one app's failed attempts into
     the next, and so the limits come from *this* app's settings.
+
+    The shared counter lives in the cache backend; the in-process one lives
+    here. Both are consulted, and either can refuse - see
+    `app.security.throttle`.
     """
-    existing: LoginThrottle | None = getattr(request.app.state, "login_throttle", None)
+    existing: SharedLoginThrottle | None = getattr(request.app.state, "login_throttle", None)
     if existing is None:
-        existing = LoginThrottle(
+        existing = SharedLoginThrottle(
+            request.app.state.cache,
+            LoginThrottle(
+                max_attempts=settings.login_max_attempts,
+                window_seconds=settings.login_attempt_window_seconds,
+            ),
+            prefix=settings.cache_prefix,
             max_attempts=settings.login_max_attempts,
             window_seconds=settings.login_attempt_window_seconds,
         )
@@ -79,7 +89,7 @@ async def _authenticate(
     ip = client_ip(request)
     throttle = _throttle(request, settings)
 
-    if not throttle.check(normalised, ip):
+    if not await throttle.check(normalised, ip):
         # Refused before the password is looked at, so a locked-out attacker
         # cannot keep the server paying bcrypt's cost. Audited out of band:
         # raising rolls this request's transaction back.
@@ -106,7 +116,7 @@ async def _authenticate(
         password_ok = await verify_password_async(password, user.hashed_password)
 
     if user is None or not password_ok or not user.is_active:
-        attempts = throttle.record_failure(normalised, ip)
+        attempts = await throttle.record_failure(normalised, ip)
         await record_audit_independent(
             action=AuditAction.LOGIN_FAILED,
             actor_email=normalised,
@@ -116,7 +126,7 @@ async def _authenticate(
         )
         raise AuthenticationError("Incorrect email or password.")
 
-    throttle.reset(normalised, ip)
+    await throttle.reset(normalised, ip)
     token, expires_in = create_access_token(
         subject=str(user.id), role=user.role.value, settings=settings
     )

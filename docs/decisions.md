@@ -970,3 +970,235 @@ for is the reviewable fact, and copying results into a new row would double the
 trail on every read.
 
 **Cost.** One extra write per read, and a trail that grows with its own use.
+
+---
+
+## 40. Tracing is a span collector stored with the answer, not OpenTelemetry
+
+**Decision.** `app.observability.trace` keeps a per-request list of spans in a
+context variable. The middleware opens it; retrieval, embedding, reranking,
+hydration, the injection screen, every LLM call and every tool call record
+spans into it. The roll-up (`components_ms`) and the spans are stored in the
+assistant message's trace, returned in the response, and written on the
+request's log line.
+
+**Why.** Project plan section 15 asks for latency per component. The SDK, an
+OTLP exporter and a collector are three more moving parts for a local stack,
+and the spans would go to a backend this project does not run. A plain dict
+stored on the message is something the cost dashboard and the evaluation
+harness can read back later, and a trace sent to a backend nobody runs is not.
+The span model has the same shape OTLP uses (name, parent, duration,
+attributes), so an exporter can be added over `Trace.spans` without a rewrite.
+
+The breakdown is **self time**: each component's duration minus that of its
+direct children. Inclusive totals double-count nesting, so the shares on a
+breakdown built from them add up to more than 100%.
+
+A span is recorded when it *starts*, so a request that raised still shows which
+component it was inside.
+
+`MeasuredLLM` wraps the provider protocol rather than timing inside
+`OllamaLLM` or at the four call sites. It is the only placement that covers
+every caller and any provider added later. The same argument puts the injection
+filter at the retriever's exit.
+
+**Cost.** No distributed context propagation, no sampling, no flame graphs. Span
+depth is a counter, so spans from concurrent tasks inside one request would nest
+wrongly. Today nothing in a request runs concurrently.
+
+**Revisit if.** A second service joins the request path, or requests start
+fanning out concurrently. Either one is the point where real propagation is
+worth running a collector for.
+
+---
+
+## 41. The cache fails open, and a breaker stops it costing time when it does
+
+**Decision.** Every cache operation swallows its error and reads as a miss.
+Socket timeouts are 250ms. Three consecutive failures open a breaker for 30
+seconds, and while it is open, calls return a miss without touching the socket.
+Readiness reports the cache but is not decided by it.
+
+**Why.** A cache is an optimisation, so its outage should cost latency and
+nothing else. Failing open covers correctness but not latency: a Redis that is
+down but still being called adds its connect timeout to every request, and the
+system ends up slower than it would be with no cache.
+
+Measured by stopping the Redis container under the running API: the first
+request after the outage spent **251ms** in `retrieval.cache` (three failures at
+the timeout budget, then the breaker opened), and each later request spent
+**0.07ms** there. When Redis came back, the next successful call logged
+`cache_recovered` and the following repeat search was a hit again.
+
+Readiness excludes the cache because removing a replica from the load balancer
+over a cache outage would turn a latency problem into an availability one.
+
+**Cost.** While the breaker is open, reads get nothing from the cache for up to
+30 seconds after Redis recovers. In CI, the step after the outage test polls
+readiness until the cache reports `ok` instead of assuming it has recovered.
+
+**Revisit if.** The cache starts holding anything the system cannot recompute.
+That would make it a datastore, and a datastore should not fail open.
+
+---
+
+## 42. Embeddings and rankings are cached, keyed on the caller's scope. Answers are not.
+
+**Decision.** Two caches.
+
+* **Query embeddings**, keyed on (model, dimensions, text). A query embedding
+  does not depend on who is asking, so callers can share it. Stored as float64
+  so a cached vector is bit-identical to a fresh one.
+* **Rankings**: the chunk ids and scores after fusion and reranking, keyed on
+  (query, the whole retrieval config, **the caller's access filter**, index
+  generation). Hydration from SQL Server still runs on a hit, so no document
+  text goes into Redis and an edited chunk is never served stale.
+
+Indexing increments a generation counter, and every ranking key includes it,
+so one `INCR` makes a whole generation unreachable. Both the upload path and
+`reindex.py` increment it.
+
+**Why.** A ranking cache is also an access-control risk. If the key leaves out
+the scope, the first caller's results are served to the next caller, which
+bypasses the pre-search filter from Sprint 3. `scope_digest` is therefore
+derived from `dataclasses.fields(AccessFilter)`, not from a hand-written list,
+so a scoping field added later is included automatically. `None` (unrestricted)
+and the empty set (no patients) are encoded differently, because both are falsy
+and are easy to collapse by accident. A test sends the same question from a
+clinician and then an analyst and asserts the analyst misses.
+`smoke_observability.py` does the same against Redis.
+
+Invalidation uses a generation counter rather than deleting keys, because
+scanning Redis for keys blocks, costs more as the keyspace grows, and would
+run on the slowest code path in the system.
+
+**Answers are not cached.** Against a 30-second generation, a response cache
+would help more than anything else here. It is also the cache that stores
+generated text derived from restricted documents outside the audited database,
+and the one where a stale entry outlives the correction of the document it
+cites. The hit rate on free-text clinical questions would not justify either
+cost.
+
+**Cost.** Old generations are orphaned rather than deleted, and they hold
+memory until their five-minute TTL. A cache hit still makes two Redis round
+trips (generation, then entry) plus a SQL Server hydration.
+
+**Hydration re-applies the scope against SQL Server.** Found in review, after
+the cache was built. Invalidation fails open like everything else in the
+cache: if Redis is unreachable at the moment a reindex bumps the generation,
+the bump is lost, and a warm ranking survives for up to its TTL. If that
+reindex was a document being tightened from `internal` to `restricted`, the
+surviving ranking still names its chunks for an analyst, and hydration loaded
+chunks by id without asking. So `admits()`, which sits next to `build_filter`
+and has the same semantics, now runs over every hydrated row using the
+database's `access_level` and `patient_id`, and drops what the caller may no
+longer see.
+
+It closes an older gap too. The uncached path trusts Qdrant's payload copy of
+the access level, which has always been stale between a document changing and
+`reindex.py` running. Both cases have a test. With the check disabled, **both
+fail**: the cached hit and the fresh search each return the tightened
+document to the analyst. On a consistent index the check drops nothing, so it
+costs no recall. The caching experiment's per-case results are bit-identical
+with it in place.
+
+**Revisit if.** Some traffic is a genuinely repeated, scope-independent
+question, such as a guideline lookup. That would justify a narrow answer cache
+for reference material only, keyed the same way.
+
+---
+
+## 43. The login limiter uses the shared counter and keeps the local one
+
+**Decision.** `SharedLoginThrottle` counts failed sign-ins in the cache backend
+with `INCR` and an `EXPIRE NX`, and keeps Sprint 6's in-process counter running
+underneath it. A caller is refused if either counter has reached the limit.
+
+**Why.** This is what decision 38 said the limiter needed. With the counter in
+Redis, every replica sees the same attempts. The local counter stays because a
+cache outage would otherwise give an attacker a fresh allowance while the
+system is degraded. With it, an outage leaves the Sprint 6 behaviour in place.
+Because either counter can refuse, the shared one can only make the limit
+stricter.
+
+The window is fixed, not sliding. `EXPIRE NX` sets the expiry when the counter
+is created and never extends it, so failed attempts inside a window cannot
+push its end back.
+
+**Cost.** An extra round trip on each failed sign-in. The in-process fallback is
+still per-replica, which is the weakness this decision exists to fix, but it
+only applies during an outage.
+
+---
+
+## 44. The dashboard separates what was served from what the process counted
+
+**Decision.** `GET /metrics/overview`, admin only, returns two blocks that the
+page keeps visually apart. **Answers** comes from `chat_messages`: exact token
+and cost totals for the window, plus percentiles, per-model rows, per-component
+self time and a daily series computed over the most recent 2,000 answers.
+**Process** comes from in-memory counters since the process started: request
+volume, 5xx rate, all-endpoint percentiles, model calls, tool calls and
+refusals, and cache hits per namespace.
+
+**Why.** The database knows everything that produced an answer and nothing
+about the requests that did not, such as 500s during an outage or a cache that
+misses every time. The counters cover those, but they reset on deploy, and a
+fresh container's twelve requests should not read as a quiet week. So the
+counters are labelled with the time the process started.
+
+Percentiles are computed in Python. T-SQL's `PERCENTILE_CONT` is a window
+function and SQLite, which the test suite runs on, has no equivalent. Computing
+them the same way everywhere means the suite tests the code production runs.
+The same reasoning puts the daily grouping in Python rather than in a
+dialect-specific date cast.
+
+Health probes are excluded from the counters. On an idle deployment they are
+most of the traffic, and a p50 made mostly of probes says nothing useful.
+Only 5xx responses count as errors, since a 401 or 403 means the controls are
+working.
+
+Reading the dashboard is not audited, unlike `/audit`. The aggregates name no
+patient and no user, so an audit row per read would only add noise to a trail
+whose value is that every row in it matters.
+
+**Cost.** The detail blocks are approximate once a window holds more than
+2,000 answers. The response says how many it covered.
+
+---
+
+## 45. The production overlay is the same images, and it is not a deployment
+
+**Decision.** `docker-compose.prod.yml` builds the `runtime` targets, drops the
+source mount and `--reload`, runs two workers as a non-root user, publishes only
+the API and web ports, turns on Redis append-only persistence, and sets
+`APP_ENV=production`, `AUTH_COOKIE_SECURE=true` and `CACHE_BACKEND=redis`.
+Migrations are a separate step and do not run on boot. CI builds these images
+on every push.
+
+**Why.** The dev stack runs `alembic upgrade head` on boot so a fresh clone is
+one command away from working. In production, with two workers and more than
+one replica, that would mean several processes racing to migrate the same
+database. Redis persistence is on because the generation counter must not
+restart at a number that surviving entries already used. Building the images in
+CI means a broken production Dockerfile is caught before a deploy rather than
+during one.
+
+**What it is not.** There is no TLS termination, secret manager, backup, log
+shipping or autoscaling. `APP_ENV=production` refuses to start with the
+development JWT secret or an insecure cookie, so something has to sit in front
+of it. The project plan's deployment target was Azure, and v1 has no Azure by
+decision 11. This overlay gives a real deployment the same artefacts and
+configuration shape, so what remains is a list of additions rather than a
+rewrite.
+
+**Two defects in the first version of the overlay, both found by inspecting the
+result rather than the file.** First, `APP_ENV: ${APP_ENV:-production}` looked
+right, but Compose interpolates from `.env`, where development sets `local`, so
+the "production" overlay ran as local and skipped every production check.
+`docker compose config` showed it. It is now a literal. Second, the runtime
+images were built under the same tag as the dev images, so building production
+replaced the dev image in place and the next `docker compose run api pytest`
+ran as `appuser` with no pytest. The overlay now tags them `:runtime`. Both
+failures were silent, and both came from settings that look correct on the
+page.

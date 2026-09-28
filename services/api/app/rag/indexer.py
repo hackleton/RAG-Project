@@ -10,6 +10,12 @@ re-index after a chunk-size change leaves both generations in the index -
 retrieval then returns overlapping chunks from two different chunkings, which
 is a genuinely confusing failure mode and exactly the loop the section 14
 experiments run.
+
+Indexing is also the event that makes a cached ranking wrong, so it is where
+the ranking cache's generation is bumped. Done after the upsert, not before: a
+failed index leaves the previous generation intact and still correct, whereas
+bumping first would throw away a warm cache to describe an index that never
+changed.
 """
 
 from __future__ import annotations
@@ -21,6 +27,7 @@ from datetime import UTC, datetime
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.cache.ranking import RankingCache
 from app.core.logging import get_logger
 from app.models.document import Document, DocumentChunk
 from app.models.enums import DocumentStatus
@@ -44,9 +51,16 @@ class IndexResult:
 
 
 class Indexer:
-    def __init__(self, *, store: VectorStore, embedder: EmbeddingProvider) -> None:
+    def __init__(
+        self,
+        *,
+        store: VectorStore,
+        embedder: EmbeddingProvider,
+        ranking_cache: RankingCache | None = None,
+    ) -> None:
         self._store = store
         self._embedder = embedder
+        self._ranking_cache = ranking_cache
 
     async def index_document(self, session: AsyncSession, document: Document) -> IndexResult:
         await self._store.ensure_collection(dimensions=self._embedder.dimensions)
@@ -115,6 +129,9 @@ class Indexer:
         # response serialiser cannot make.
         document.indexed_at = datetime.now(UTC)
         await session.flush()
+
+        if self._ranking_cache is not None and indexed:
+            await self._ranking_cache.invalidate()
 
         logger.info(
             "document_indexed",

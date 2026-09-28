@@ -5,13 +5,20 @@ something, and bcrypt at cost 12 makes each guess expensive for the *server*
 as well as the attacker - a few hundred concurrent attempts is a denial of
 service whether or not any of them succeed.
 
-**This counter lives in the process.** It is honest about what that means: with
-more than one API replica the effective limit is the configured one multiplied
-by the replica count, and a restart forgives every attempt so far. For a
-single-container local deployment that is the real limit; for anything else the
-counter belongs in Redis, which Sprint 7 introduces. Putting it in SQL Server
-instead would mean a write per failed guess, which hands an attacker a cheap
-way to make the database do work.
+**Two counters, and a caller is refused if either has had enough.** Sprint 6
+left this in the process and decision 38 recorded why that was weak: with more
+than one replica the effective limit is the configured one times the replica
+count. `SharedLoginThrottle` puts the count in the cache backend, where every
+replica sees it, and keeps the in-process counter running underneath.
+
+Keeping both is the point. A cache outage would otherwise hand an attacker a
+fresh budget at the moment the system is least healthy; with the local counter
+still recording, an outage degrades the limiter to exactly what Sprint 6 had
+rather than to nothing. And because a refusal needs only one of the two to
+trip, the shared counter can only ever make the limit stricter.
+
+Putting it in SQL Server instead would mean a write per failed guess, which
+hands an attacker a cheap way to make the database do work.
 
 Keyed on **email and IP together**, not on either alone. On email alone, anyone
 who knows an address can lock its owner out; on IP alone, a shared NAT locks
@@ -24,6 +31,9 @@ from __future__ import annotations
 import time
 from collections import deque
 from dataclasses import dataclass, field
+
+from app.cache.backend import CacheBackend
+from app.cache.keys import throttle_key
 
 
 @dataclass(slots=True)
@@ -84,3 +94,53 @@ class LoginThrottle:
 
 def _key(email: str, ip: str | None) -> tuple[str, str]:
     return email.strip().lower(), ip or "-"
+
+
+class SharedLoginThrottle:
+    """The in-process limiter, backed by a counter every replica can see."""
+
+    def __init__(
+        self,
+        cache: CacheBackend,
+        local: LoginThrottle,
+        *,
+        prefix: str,
+        max_attempts: int,
+        window_seconds: int,
+    ) -> None:
+        self._cache = cache
+        self._local = local
+        self._prefix = prefix
+        self._max_attempts = max_attempts
+        self._window_seconds = window_seconds
+
+    @property
+    def local(self) -> LoginThrottle:
+        return self._local
+
+    async def check(self, email: str, ip: str | None) -> bool:
+        if not self._local.check(email, ip):
+            return False
+        shared = await self._shared_count(email, ip)
+        return shared is None or shared < self._max_attempts
+
+    async def record_failure(self, email: str, ip: str | None) -> int:
+        local = self._local.record_failure(email, ip)
+        shared = await self._cache.increment(self._key(email, ip), ttl_seconds=self._window_seconds)
+        return max(local, shared or 0)
+
+    async def reset(self, email: str, ip: str | None) -> None:
+        self._local.reset(email, ip)
+        await self._cache.delete(self._key(email, ip))
+
+    async def _shared_count(self, email: str, ip: str | None) -> int | None:
+        raw = await self._cache.get(self._key(email, ip))
+        if raw is None:
+            return None
+        try:
+            return int(raw)
+        except ValueError:
+            return None
+
+    def _key(self, email: str, ip: str | None) -> str:
+        return throttle_key(prefix=self._prefix, email=email, ip=ip)

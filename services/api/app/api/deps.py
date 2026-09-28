@@ -26,6 +26,8 @@ from app.agents.factory import build_registry
 from app.agents.planner import LlmPlanner, Planner, RuleBasedPlanner
 from app.agents.registry import ToolRegistry
 from app.agents.service import AgentService
+from app.cache.backend import CacheBackend
+from app.cache.ranking import RankingCache
 from app.core.config import PlannerName, Settings, get_settings
 from app.core.db import get_db_session
 from app.core.errors import AuthenticationError, PermissionDeniedError
@@ -191,6 +193,19 @@ def get_llm(request: Request) -> LLMProvider:
     return llm
 
 
+def get_cache(request: Request) -> CacheBackend:
+    cache: CacheBackend = request.app.state.cache
+    return cache
+
+
+def get_ranking_cache(request: Request) -> RankingCache | None:
+    """None when ranking reuse is switched off, which is a valid deployment."""
+    cache: RankingCache | None = request.app.state.ranking_cache
+    return cache
+
+
+CacheDep = Annotated[CacheBackend, Depends(get_cache)]
+RankingCacheDep = Annotated[RankingCache | None, Depends(get_ranking_cache)]
 EmbedderDep = Annotated[EmbeddingProvider, Depends(get_embedder)]
 VectorStoreDep = Annotated[VectorStore, Depends(get_vector_store)]
 LLMDep = Annotated[LLMProvider, Depends(get_llm)]
@@ -213,8 +228,10 @@ def get_retrieval_config(settings: SettingsDep) -> RetrievalConfig:
 RetrievalConfigDep = Annotated[RetrievalConfig, Depends(get_retrieval_config)]
 
 
-def get_indexer(store: VectorStoreDep, embedder: EmbedderDep) -> Indexer:
-    return Indexer(store=store, embedder=embedder)
+def get_indexer(
+    store: VectorStoreDep, embedder: EmbedderDep, ranking_cache: RankingCacheDep
+) -> Indexer:
+    return Indexer(store=store, embedder=embedder, ranking_cache=ranking_cache)
 
 
 def get_document_service(
@@ -246,6 +263,7 @@ def get_rag_service(
     embedder: EmbedderDep,
     llm: LLMDep,
     config: RetrievalConfigDep,
+    ranking_cache: RankingCacheDep,
 ) -> RagService:
     return RagService(
         retriever=HybridRetriever(
@@ -253,6 +271,7 @@ def get_rag_service(
             embedder=embedder,
             reranker=request.app.state.reranker,
             config=config,
+            ranking_cache=ranking_cache,
         ),
         llm=llm,
     )
@@ -268,6 +287,7 @@ def get_tool_registry(
     embedder: EmbedderDep,
     llm: LLMDep,
     config: RetrievalConfigDep,
+    ranking_cache: RankingCacheDep,
 ) -> ToolRegistry:
     """The tools, their roles, and their collaborators.
 
@@ -283,6 +303,7 @@ def get_tool_registry(
             embedder=embedder,
             reranker=request.app.state.reranker,
             config=config,
+            ranking_cache=ranking_cache,
         ),
         config=config,
         llm=llm,

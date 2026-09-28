@@ -46,6 +46,8 @@ def environment_payload(settings: Settings) -> dict[str, Any]:
         "llm_model": settings.llm_model,
         "chunk_target_tokens": settings.chunk_target_tokens,
         "chunk_overlap_tokens": settings.chunk_overlap_tokens,
+        "cache_backend": settings.cache_backend.value,
+        "cache_rankings": settings.cache_rankings,
     }
 
 
@@ -414,3 +416,22 @@ def _dig(payload: dict[str, Any], path: tuple[str, ...]) -> float | None:
             return None
         current = current[key]
     return float(current) if isinstance(current, int | float) else None
+
+
+# Settings that change how *fast* a run is and nothing else. A cached ranking is
+# the same ranking - that is the property the cache key exists to guarantee - so
+# every retrieval and generation metric must come out identical with it on and
+# off, and only the latency block may move. Reported for the same reason as
+# GENERATION_KEYS: the verdict stays honest, the latency numbers underneath it
+# are not comparable, and silence would imply they were.
+LATENCY_KEYS: tuple[str, ...] = ("cache_backend", "cache_rankings")
+
+
+def latency_changes(baseline: dict[str, Any], config: dict[str, Any]) -> list[str]:
+    """Caching differences from the baseline's - latency context, not a verdict."""
+    recorded = baseline.get("config", {})
+    return [
+        f"{key} {recorded.get(key)!r} -> {config[key]!r}"
+        for key in LATENCY_KEYS
+        if key in config and recorded.get(key) != config[key]
+    ]

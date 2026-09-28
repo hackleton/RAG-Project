@@ -15,6 +15,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from app import __version__
 from app.api.middleware import RequestContextMiddleware
 from app.api.router import api_router, root_router
+from app.cache.backend import build_cache
+from app.cache.embeddings import CachingEmbeddingProvider
+from app.cache.ranking import RankingCache
 from app.core.config import Settings, get_settings
 from app.core.db import (
     dispose_engine,
@@ -24,6 +27,7 @@ from app.core.db import (
 )
 from app.core.errors import register_exception_handlers
 from app.core.logging import configure_logging, get_logger
+from app.observability.instruments import MeasuredLLM
 from app.providers.embedding import build_embedding_provider
 from app.providers.llm import build_llm_provider
 from app.providers.reranker import build_reranker
@@ -58,10 +62,37 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # Built once per process. The embedding model and reranker load their
         # weights lazily on first use, so start-up stays fast and a missing
         # model surfaces on the first query rather than blocking the boot.
-        application.state.embedder = build_embedding_provider(settings)
+        #
+        # The cache is constructed before the things that use it, and never
+        # connects here: a Redis that is down must delay nothing at boot, and
+        # a deployment that cannot reach it has to keep serving. `build_cache`
+        # therefore only builds a client; the first request finds out.
+        application.state.cache = build_cache(settings)
+
+        embedder = build_embedding_provider(settings)
+        if settings.cache_enabled and settings.cache_embeddings:
+            embedder = CachingEmbeddingProvider(
+                embedder,
+                application.state.cache,
+                prefix=settings.cache_prefix,
+                ttl_seconds=settings.cache_embedding_ttl_seconds,
+            )
+        application.state.embedder = embedder
+        application.state.ranking_cache = (
+            RankingCache(
+                application.state.cache,
+                prefix=settings.cache_prefix,
+                ttl_seconds=settings.cache_ranking_ttl_seconds,
+            )
+            if settings.cache_enabled and settings.cache_rankings
+            else None
+        )
+
         application.state.reranker = build_reranker(settings)
         application.state.vector_store = QdrantVectorStore(settings)
-        application.state.llm = build_llm_provider(settings)
+        # Wrapped so every completion is timed and counted whichever caller
+        # made it - chat, the planner, synthesis or the evaluation judge.
+        application.state.llm = MeasuredLLM(build_llm_provider(settings))
 
         logger.info(
             "api_startup",
@@ -73,11 +104,22 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             retrieval_mode=settings.retrieval_mode,
             planner=settings.effective_planner.value,
             sql_tool_enabled=settings.sql_tool_enabled,
+            cache_backend=settings.cache_backend.value,
         )
+        if not settings.is_local and not settings.shared_cache:
+            # Not fatal - the system is correct without a shared cache - but
+            # the failed-login limiter silently becomes per-replica, which is
+            # the weakness decision 38 recorded and Sprint 7 came to fix.
+            logger.warning(
+                "cache_not_shared",
+                backend=settings.cache_backend.value,
+                consequence="login throttling and ranking reuse are per-process",
+            )
         try:
             yield
         finally:
             await application.state.vector_store.close()
+            await application.state.cache.close()
             await dispose_readonly_engine()
             await dispose_engine()
             logger.info("api_shutdown")

@@ -282,6 +282,104 @@ export interface AuditSummary {
   counts: { action: string; total: number; denied: number }[];
 }
 
+/**
+ * The cost and latency dashboard.
+ *
+ * `answers` and `daily` are durable - read back out of the message rows the
+ * users actually received. `process` is in-memory and resets when the API
+ * restarts, which is why the page labels it separately rather than letting the
+ * two blocks look like one number.
+ */
+export interface LatencyPercentiles {
+  p50: number;
+  p95: number;
+  p99: number;
+  max: number;
+  count: number;
+}
+
+export interface ModelUsage {
+  model: string;
+  answers: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+  cost_usd: number;
+  latency_ms: LatencyPercentiles;
+}
+
+export interface ComponentLatency {
+  name: string;
+  calls: number;
+  total_ms: number;
+  mean_ms: number;
+  /** Self time as a fraction of the traced total, so the shares sum to 1. */
+  share: number;
+}
+
+export interface AnswerMetrics {
+  answers: number;
+  latency_ms: LatencyPercentiles;
+  prompt_tokens: number;
+  completion_tokens: number;
+  cost_usd: number;
+  models: ModelUsage[];
+  components: ComponentLatency[];
+  sampled: number;
+}
+
+export interface DailyPoint {
+  day: string;
+  answers: number;
+  p95_ms: number;
+  tokens: number;
+  cost_usd: number;
+}
+
+export interface CacheNamespaceStats {
+  namespace: string;
+  hit: number;
+  miss: number;
+  store: number;
+  error: number;
+  hit_rate: number | null;
+}
+
+export interface CacheStatus {
+  backend: string;
+  enabled: boolean;
+  /** False means every replica has its own cache and its own login counter. */
+  shared: boolean;
+  reachable: boolean | null;
+  namespaces: CacheNamespaceStats[];
+}
+
+export interface ProcessMetrics {
+  started_at: string;
+  uptime_seconds: number;
+  requests: {
+    total: number;
+    by_status_class: Record<string, number>;
+    error_rate: number;
+    p50_ms: number;
+    p95_ms: number;
+    max_ms: number;
+    sampled: number;
+  };
+  llm_calls: number;
+  llm_mean_ms: number;
+  tools: { name: string; calls: number; failures: number }[];
+}
+
+export interface MetricsOverview {
+  generated_at: string;
+  window_days: number;
+  since: string;
+  answers: AnswerMetrics;
+  daily: DailyPoint[];
+  cache: CacheStatus;
+  process: ProcessMetrics;
+}
+
 interface RequestOptions {
   method?: string;
   body?: unknown;
@@ -402,4 +500,7 @@ export const api = {
   },
 
   auditSummary: (signal?: AbortSignal) => request<AuditSummary>("/audit/summary", { signal }),
+
+  metrics: (days = 7, signal?: AbortSignal) =>
+    request<MetricsOverview>(`/metrics/overview?days=${days}`, { signal }),
 };

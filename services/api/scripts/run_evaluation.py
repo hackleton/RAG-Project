@@ -26,6 +26,9 @@ from pathlib import Path
 from typing import Any
 
 from app.api.deps import get_retrieval_config
+from app.cache.backend import build_cache
+from app.cache.embeddings import CachingEmbeddingProvider
+from app.cache.ranking import RankingCache
 from app.core.config import LLMProvider as LLMProviderName
 from app.core.config import Settings, get_settings
 from app.core.db import dispose_engine, get_sessionmaker, init_engine
@@ -35,6 +38,7 @@ from app.evaluation.experiments import (
     environment_payload,
     generation_changes,
     incomparable,
+    latency_changes,
     load_baseline,
     retrieval_changes,
     write_baseline,
@@ -52,13 +56,37 @@ from app.rag.service import RagService
 
 def build_rag(settings: Settings, config: RetrievalConfig) -> tuple[RagService, QdrantVectorStore]:
     store = QdrantVectorStore(settings)
+    # Wired from settings rather than forced off, so "caching on vs off"
+    # (project plan section 14) is a run of this script with one environment
+    # variable changed. A cached ranking is the same ranking, so the quality
+    # metrics must come out identical across the two arms - which makes the
+    # experiment a correctness check on the cache key as much as a latency
+    # measurement.
+    cache = build_cache(settings)
+    embedder = build_embedding_provider(settings)
+    if settings.cache_enabled and settings.cache_embeddings:
+        embedder = CachingEmbeddingProvider(
+            embedder,
+            cache,
+            prefix=settings.cache_prefix,
+            ttl_seconds=settings.cache_embedding_ttl_seconds,
+        )
     return (
         RagService(
             retriever=HybridRetriever(
                 store=store,
-                embedder=build_embedding_provider(settings),
+                embedder=embedder,
                 reranker=build_reranker(settings),
                 config=config,
+                ranking_cache=(
+                    RankingCache(
+                        cache,
+                        prefix=settings.cache_prefix,
+                        ttl_seconds=settings.cache_ranking_ttl_seconds,
+                    )
+                    if settings.cache_enabled and settings.cache_rankings
+                    else None
+                ),
             ),
             llm=build_llm_provider(settings),
         ),
@@ -215,6 +243,16 @@ def main() -> int:
         for change in generation:
             print(f"  {change}")
         print("  Retrieval and security still compare; generation metrics do not.")
+
+    caching = latency_changes(baseline, environment)
+    if caching:
+        # A cached ranking is the same ranking, so every quality metric still
+        # compares - latency does not, and a p95 that halved because a cache
+        # was warm is not an improvement anyone made.
+        print(f"\nCaching differs from {arguments.baseline}:")
+        for change in caching:
+            print(f"  {change}")
+        print("  Quality metrics still compare; latency does not.")
 
     violations = check_regression(metrics, baseline)
     if not violations:

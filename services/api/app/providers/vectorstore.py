@@ -19,7 +19,11 @@ been shown. Two reasons that distinction matters:
 
 The payload therefore duplicates `patient_id` and `access_level` from SQL
 Server. That is denormalisation with a real cost - it has to be re-synced when
-a document's access level changes - and `reindex.py` exists to do that.
+a document's access level changes - and `reindex.py` exists to do that. Until
+it is, the copy is stale in the permissive direction if the document was
+tightened, which is why `admits()` re-applies the same scope to the database's
+record at hydration: the filter here decides what is *searched*, and the
+record decides what is *returned*.
 """
 
 from __future__ import annotations
@@ -296,6 +300,36 @@ def build_filter(access: AccessFilter) -> models.Filter:
         )
 
     return models.Filter(must=must)
+
+
+def admits(
+    access: AccessFilter,
+    *,
+    access_level: str,
+    patient_id: uuid.UUID | None,
+    document_id: uuid.UUID,
+    document_type: str,
+) -> bool:
+    """`build_filter`, evaluated against the database's record of a chunk.
+
+    Kept beside `build_filter` because the two must mean the same thing. The
+    filter runs in Qdrant, over the payload copy; this runs at hydration, over
+    the row in SQL Server, which is the record. They disagree exactly when the
+    payload is stale - a document's access level tightened but not yet
+    reindexed, or a cached ranking that outlived the reindex because the
+    generation bump failed open - and in that case the record wins.
+    """
+    if access_level not in access.access_levels:
+        return False
+    if (
+        access.patient_ids is not None
+        and patient_id is not None
+        and patient_id not in access.patient_ids
+    ):
+        return False
+    if access.document_ids is not None and document_id not in access.document_ids:
+        return False
+    return access.document_types is None or document_type in access.document_types
 
 
 def _is_missing_collection(exc: Exception) -> bool:

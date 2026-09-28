@@ -44,6 +44,7 @@ from app.core.logging import get_logger
 from app.models.chat import ChatMessage, ChatSession
 from app.models.enums import ChatRole
 from app.models.patient import Patient
+from app.observability.trace import current_trace
 from app.providers.llm import LLMProvider
 from app.security.principal import Principal
 from app.security.rbac import assert_patient_access
@@ -188,6 +189,14 @@ class AgentService:
                 "total": round((time.perf_counter() - started) * 1000, 2),
             },
         }
+        # The span collector knows what each tool and each model call cost;
+        # `timings_ms` above only knows the two phases. Both are kept: the
+        # phases are what the agent reasons about, the components are what an
+        # operator looks at when a run is slow.
+        request_trace = current_trace()
+        if request_trace is not None:
+            timing = request_trace.to_dict()
+            trace |= {key: timing[key] for key in ("components_ms", "spans") if key in timing}
 
         chat_session = await self._session_for(session, principal, session_id, question)
         session.add(ChatMessage(session_id=chat_session.id, role=ChatRole.USER, content=question))

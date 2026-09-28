@@ -1,0 +1,94 @@
+# Production overlay.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+#
+# What changes, and why each one matters:
+#
+# * **The runtime image, not the dev one.** No pytest, no ruff, no mypy, no
+#   source bind mount - the code in the container is the code that was built,
+#   so a running deployment cannot be edited into a state nobody can reproduce.
+#   It also runs as a non-root user (`appuser`, uid 10001).
+# * **No `--reload`, and more than one worker.** The reloader watches the
+#   filesystem and restarts on a write, which in production is either nothing
+#   or a very bad surprise.
+# * **Migrations do not run on boot.** The dev stack runs `alembic upgrade head`
+#   in the API's command so a fresh clone is one step from working. With two
+#   workers and a replica count above one, that is several processes racing to
+#   migrate the same database. Here it is a deliberate step before the deploy:
+#     docker compose -f docker-compose.yml -f docker-compose.prod.yml \
+#       run --rm api alembic upgrade head
+# * **The datastores are not published.** Only the API and the web app get a
+#   host port; SQL Server, Qdrant and Redis are reachable on the compose
+#   network and nowhere else.
+# * **`restart: unless-stopped`** everywhere, so a crash is recovered from
+#   rather than noticed the next morning.
+#
+# What this is *not*: a production deployment. There is no TLS termination, no
+# secret manager, no backups, no log shipping and no horizontal scaling here,
+# and `APP_ENV=production` refuses to start without a real JWT secret and a
+# secure cookie, which means something has to terminate TLS in front of it.
+# What it is, is the same images and the same configuration shape a real
+# deployment would use, so the gap is a list rather than a rewrite. See the
+# README's "Running it like production" section.
+
+services:
+  mssql:
+    restart: unless-stopped
+    ports: !override []
+
+  qdrant:
+    restart: unless-stopped
+    ports: !override []
+
+  redis:
+    restart: unless-stopped
+    ports: !override []
+    # Append-only on: the ranking cache tolerates losing everything, but the
+    # index generation counter restarting at zero while entries survive would
+    # let a stale ranking be served under a generation it already used. Nothing
+    # survives a flush either way, so this is belt and braces for a restart.
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis_data:/data
+
+  api:
+    # Its own tag. Without one, compose names this image exactly as it names
+    # the dev build, so building production replaced the dev image in place:
+    # the next `docker compose run api pytest` ran as appuser with no pytest.
+    image: healthcare-copilot-api:runtime
+    build:
+      target: runtime
+    restart: unless-stopped
+    environment:
+      # A literal, not ${APP_ENV:-production}. Compose interpolates from .env,
+      # and .env says APP_ENV=local for development - so the default form
+      # resolved to "local" and silently switched off every check that
+      # `validate_production_safety` exists to make. Caught by inspecting
+      # `docker compose config`, which is worth doing on any overlay.
+      APP_ENV: production
+      LOG_FORMAT: json
+      DEBUG: "false"
+      # An httpOnly cookie sent over plain http is not a protection; the
+      # settings validator refuses to boot without this outside local/CI.
+      AUTH_COOKIE_SECURE: "true"
+      CACHE_BACKEND: redis
+    # The source mount is deliberately dropped - the image is the artefact.
+    volumes: !override
+      - api_storage:/srv/.data
+    command:
+      ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2"]
+
+  web:
+    image: healthcare-copilot-web:runtime
+    build:
+      target: runtime
+      args:
+        NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-http://localhost:8000}
+        NEXT_PUBLIC_API_PREFIX: ${NEXT_PUBLIC_API_PREFIX:-/api/v1}
+    restart: unless-stopped
+    volumes: !override []
+    depends_on:
+      api: { condition: service_healthy }
+
+volumes:
+  redis_data:

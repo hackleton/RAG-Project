@@ -16,6 +16,7 @@ from app.api.routes import (
     documents,
     evaluations,
     health,
+    metrics,
     search,
 )
 
@@ -30,3 +31,4 @@ api_router.include_router(search.router)
 api_router.include_router(agents.router)
 api_router.include_router(evaluations.router)
 api_router.include_router(audit.router)
+api_router.include_router(metrics.router)
