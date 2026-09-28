@@ -23,6 +23,29 @@ for attempt in $(seq 1 60); do
     sleep 2
 done
 
+# Reachable is not the same as ready. On a restart with an existing volume,
+# SQL Server answers `SELECT 1` against master while the application database
+# is still recovering, and the bootstrap then fails with Msg 904 ("cannot be
+# autostarted during server shutdown or startup"). A fresh volume - which is
+# what CI always has - never hits this, so it only ever bit a developer's
+# second `docker compose up`. ABSENT means the database does not exist yet,
+# which the bootstrap is about to fix; anything else must be ONLINE.
+DB="${MSSQL_DB:-copilot}"
+for attempt in $(seq 1 60); do
+    state=$("$SQLCMD" -S "$HOST" -U sa -P "$MSSQL_SA_PASSWORD" -C -l 3 -h -1 -W \
+        -Q "SET NOCOUNT ON; SELECT COALESCE(CONVERT(varchar(32), DATABASEPROPERTYEX('${DB}', 'Status')), 'ABSENT')" \
+        2> /dev/null | tr -d '[:space:]' || true)
+    if [ "$state" = "ONLINE" ] || [ "$state" = "ABSENT" ]; then
+        echo "Database '${DB}' is ${state} after ${attempt} attempt(s)."
+        break
+    fi
+    if [ "$attempt" -eq 60 ]; then
+        echo "Database '${DB}' never came online (last state: ${state:-unknown})." >&2
+        exit 1
+    fi
+    sleep 2
+done
+
 "$SQLCMD" -S "$HOST" -U sa -P "$MSSQL_SA_PASSWORD" -C -b \
     -v DB_NAME="${MSSQL_DB:-copilot}" \
     -v APP_LOGIN="${MSSQL_APP_USER:-copilot_app}" \
