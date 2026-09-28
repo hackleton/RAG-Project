@@ -1202,3 +1202,91 @@ replaced the dev image in place and the next `docker compose run api pytest`
 ran as `appuser` with no pytest. The overlay now tags them `:runtime`. Both
 failures were silent, and both came from settings that look correct on the
 page.
+
+---
+
+## 46. One definition of a citation marker, and it accepts `[2,3]`
+
+**Decision.** `app/rag/citations.py` holds the only citation pattern. Chat,
+the agent's synthesis step and the evaluation grader all read citations
+through `citation_numbers()` and `strip_citations()`. A marker may hold
+several numbers: `[2,3]` and `[2, 3]` are read as citations 2 and 3.
+
+**Why.** There were three copies of `\[(\d{1,2})\]`, and it matched only a
+single number. phi3 writes grouped citations, and when it did, the pattern
+went wrong in three places at once:
+
+* chat and the agent kept the first source and silently dropped the rest, so
+  the chunk supporting a claim vanished from the citation list;
+* the grader failed to strip the marker before looking for numbers, so
+  `[2,3]` was read as the number **2.3** and counted as a number the model had
+  invented. That could inflate `unsupported_number_rate`, the headline
+  answer-quality figure for a real model.
+
+**Measured, not assumed.** In a full 107-question phi3 run, grouped citations
+appeared in **0** answers, and re-grading those answers with the old and the
+new grader gave the same rate (0.0841 both). The rebuilt grading matched the
+stored results in every answer. So the bug is real, and chat demonstrably lost
+a citation on the demo question, but it had not moved the reported figure.
+The 0.075 from Sprint 5 cannot be re-checked, because its answers went with a
+database reset.
+
+The stub only ever writes `[n]`, so no test could see this, the same shape
+as the logout race in decision 37. It was found by rehearsing the demo
+against phi3 and noticing that `[2,3]` in the answer came back as `[2]` in
+the citation list.
+
+Ranges such as `[2-3]` are deliberately not accepted. No model has written one
+here, and deciding what a range means would put words in the model's mouth.
+An out-of-range number inside a group (`[2,9]` with five blocks) is still
+dropped from the answer and still counted as a hallucinated citation.
+
+**Cost.** None worth naming. Three copies became one.
+
+---
+
+## 47. An unknown patient and a forbidden one get the same refusal, and it is audited
+
+**Decision.** Every endpoint that accepts `patient_external_id` (chat, search,
+the agent, upload and the document list) resolves it through
+`app.security.patient_scope.resolve_patient`. An unknown ID and an ID the
+caller isn't granted both get the same 403 with the same message and no
+details. The attempt is written to the audit trail in its own transaction,
+with the real reason (`unknown` or `not_granted`) and the endpoint.
+
+**Why.** Found while writing the failure analysis, by checking whether the
+demo's refusals appeared in the audit trail. They didn't, and looking closer
+showed three leaks:
+
+1. **Existence.** Chat, search and the agent answered 403 for a real,
+   ungranted patient and 404 "Unknown patient" for a made-up one. The document
+   list answered an empty 200 against a 403. Comparing the two answers
+   enumerates which patient IDs exist, which in a clinical system is itself a
+   disclosure. The tool gate had always given one answer for both cases; the
+   request-level checks, written separately, did not.
+2. **The primary key.** The 403 carried the patient's internal UUID in its
+   `details`. The function raising it was commented "deliberately does not
+   reveal whether the patient exists".
+3. **The attempt.** None of these refusals was audited. "Someone asked for a
+   patient they are not assigned to" is the most important event a clinical
+   audit trail can hold.
+
+**A test had locked the leak in.**
+`test_an_unknown_patient_and_a_forbidden_one_look_the_same` asserted 403 for
+one and 404 for the other. Its comment reasoned that "nothing in either body
+says whether the patient exists", but the status code says it. The test's name
+stated the right property and its assertions required the opposite. It now
+asserts the same status and an identical error object, and
+`tests/test_patient_scope.py` checks all five endpoints for identical
+refusals, no identifiers in the body, and an audit row with the right reason.
+With the old behaviour restored, 10 of those tests fail.
+
+The reason is hidden from the caller but kept in the audit row, which only an
+administrator can read. A run of `unknown` refusals from one user is what
+probing for IDs looks like, and a reviewer can now see it.
+
+**Cost.** A caller who mistypes a patient ID is told the same thing as a
+caller who is not allowed to see it. The message ("No accessible patient
+matches that identifier") covers both honestly. Every patient ID input is now
+capped at 64 characters, as the agent's already was, so a refusal can always
+be written to the 128-character audit column.

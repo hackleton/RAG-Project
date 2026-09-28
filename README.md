@@ -14,6 +14,15 @@ swapped in later as adapters rather than a rewrite — see
 > environment it runs in. The system is an engineering project, not a clinical
 > decision-support product, and its answers are informational.
 
+**New here? Start with [the guide](docs/guide/README.md).** It explains the
+whole system in plain language: how a question flows through it, how it is
+measured, how it fails, the trade-offs, answers to the 23 interview questions
+in the project plan, and a ten-minute demo you can run with one command:
+
+```bash
+docker compose run --rm api python scripts/demo.py --pause
+```
+
 ---
 
 ## Status
@@ -27,7 +36,7 @@ swapped in later as adapters rather than a rewrite — see
 | 5 | Evaluation — dataset, retrieval + generation metrics, regression runs | **Done** |
 | 6 | Security — injection filter, cookie auth, revocation, throttling, audit read | **Done** |
 | 7 | Production — Redis cache, tracing, cost/latency dashboard, CI/CD | **Done** |
-| 8 | Interview hardening — architecture review, failure analysis, demo | Next |
+| 8 | Interview hardening — architecture review, failure analysis, demo | **Done** |
 
 Every endpoint in the plan now has behaviour behind it; nothing returns `501`
 any more.
@@ -475,7 +484,10 @@ Recorded in full in [docs/decisions.md](docs/decisions.md). The short version:
   patient the candidate pool is the whole searchable set, which is the one
   regime where reranking cannot help and can only mis-order. That is a
   hypothesis about scale, not a finding. See the sweep in
-  `evaluation/experiments/`.
+  `evaluation/experiments/`. The clearest single example: for *"What
+  medications is the patient taking?"*, merged search ranks Current Medications
+  first, and the reranker pushes it out of the top five. `scripts/demo.py`
+  shows this live (step 3).
 - For the same reason, "vector-only vs hybrid" and "candidate pool tuning"
   (plan section 14) are **unanswered**: four configurations returned identical
   metrics to four decimal places, because the pool already contained
@@ -483,5 +495,16 @@ Recorded in full in [docs/decisions.md](docs/decisions.md). The short version:
 - Generation defaults to the `echo` stub, which quotes retrieved context rather
   than composing prose. Set `LLM_PROVIDER=ollama` and point
   `OLLAMA_BASE_URL` at a running Ollama for real answers.
-- Changing a document's access level does not take effect in retrieval until
-  the vector index is rebuilt — the Qdrant payload carries a copy of it.
+- Changing a document's access level takes effect in **one direction only**
+  until the index is rebuilt, because the Qdrant payload carries a copy of it.
+  Made *more restricted*, it is refused at once: results are re-checked against
+  SQL Server as they are loaded ([decision 42](docs/decisions.md)). Made *more
+  open*, it stays hidden until `reindex.py` runs, because the stale copy still
+  filters it out. That is the safe direction to be wrong in.
+- **Dates and patient IDs in a question are treated as ordinary words.** Asked
+  about blood sugar "at the 2026-03-03 review", search returns blood-sugar
+  documents from other dates, and, without a patient filter, from other
+  patients. Every retrieval miss in the test set has this shape: recall@5 is
+  1.00 with a patient filter and 0.83 without. The fix is to pull these out of
+  the question and apply them as filters. It isn't built yet. See
+  [the guide](docs/guide/2-measuring-it.md#experiment-1-the-patient-filter-matters-more-than-anything-else).

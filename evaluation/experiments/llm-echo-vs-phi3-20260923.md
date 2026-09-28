@@ -77,7 +77,7 @@ injection filter fired during the run — 14 chunks redacted across 13 cases.
 occasionally emits a fabricated `EVIDENCE:` block naming documents that were
 never retrieved. The structured `citations` array was unaffected, because
 citations are positional — `[3]` maps to the third chunk the application
-supplied, never to a filename the model wrote. That design (decision 20) was
+supplied, never to a filename the model wrote. That design (`app/rag/prompts.py`) was
 argued for on principle in Sprint 3 and is now demonstrated against a model
 that actually does the thing it was defending against. Nothing in the current
 grading detects a fabricated *filename* in the prose, which is a gap worth
