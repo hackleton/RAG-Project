@@ -25,8 +25,7 @@ Two structural choices support that:
 
 from __future__ import annotations
 
-import re
-
+from app.rag.citations import citation_numbers
 from app.rag.retriever import RetrievedChunk
 
 SYSTEM_PROMPT = """\
@@ -54,8 +53,6 @@ NO_CONTEXT_PROMPT = """\
 No documents matched this question within the caller's access scope. Tell the \
 user that you have no supporting material and cannot answer. Do not speculate.
 """
-
-_CITATION = re.compile(r"\[(\d{1,2})\]")
 
 
 def format_context(chunks: list[RetrievedChunk]) -> str:
@@ -89,8 +86,7 @@ def parse_citations(answer: str, chunks: list[RetrievedChunk]) -> list[int]:
     would be worse than surfacing none.
     """
     seen: list[int] = []
-    for match in _CITATION.finditer(answer):
-        position = int(match.group(1))
+    for position in citation_numbers(answer):
         if 1 <= position <= len(chunks) and position not in seen:
             seen.append(position)
     return seen

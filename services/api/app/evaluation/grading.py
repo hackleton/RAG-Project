@@ -38,10 +38,11 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from app.evaluation.metrics import SourceRef
+from app.rag.citations import citation_numbers, strip_citations
 
-# Bracketed citations are stripped before numbers are extracted, or every
-# citation marker would read as an unsupported number in the answer.
-_CITATION = re.compile(r"\[(\d{1,2})\]")
+# Citation markers are stripped before numbers are extracted, or every marker
+# would read as an unsupported number - `[2,3]` as the number 2.3. See
+# `app.rag.citations`.
 _NUMBER = re.compile(r"\d+(?:[.,]\d+)?")
 _WORD = re.compile(r"[a-z0-9]+(?:[.\-/][a-z0-9]+)*")
 
@@ -173,9 +174,7 @@ def hallucinated_citations(answer: str, supplied_blocks: int) -> int:
     provenance, and only the evaluation can see it happening.
     """
     return sum(
-        1
-        for match in _CITATION.finditer(answer)
-        if not 1 <= int(match.group(1)) <= max(supplied_blocks, 0)
+        1 for number in citation_numbers(answer) if not 1 <= number <= max(supplied_blocks, 0)
     )
 
 
@@ -194,7 +193,7 @@ def fabricated_sources(answer: str, supplied: Sequence[str]) -> list[str]:
     numbers outside the supplied range, and a fabricated filename carries no
     bracket number; `unsupported_numbers` only looks at numbers. The structured
     citations the API returns are unaffected either way, because they are
-    positional - which is the point of decision 20, and the reason this is a
+    positional (see `app/rag/prompts.py`), and that is why this is a
     quality metric rather than a security one.
 
     Filenames the model *was* given are fair game: they appear in the context
@@ -220,7 +219,7 @@ def unsupported_numbers(answer: str, context: str) -> list[str]:
     supported by "7.4" in the context. Citation markers are removed first.
     """
     grounded = {_as_number(match.group()) for match in _NUMBER.finditer(context)}
-    prose = _CITATION.sub(" ", answer)
+    prose = strip_citations(answer)
     seen: list[str] = []
     for match in _NUMBER.finditer(prose):
         value = _as_number(match.group())

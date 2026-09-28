@@ -19,9 +19,8 @@ is one.
 
 from __future__ import annotations
 
-import re
-
 from app.agents.registry import DispatchOutcome
+from app.rag.citations import citation_numbers
 from app.tools.base import Evidence
 
 SYNTHESIS_SYSTEM_PROMPT = """\
@@ -50,8 +49,6 @@ No tool returned any evidence within the caller's access scope. Tell the user \
 you have no supporting material and cannot answer. Do not speculate about what \
 the records might contain.
 """
-
-_CITATION = re.compile(r"\[(\d{1,2})\]")
 
 
 def collect_evidence(outcomes: list[DispatchOutcome]) -> list[Evidence]:
@@ -127,8 +124,7 @@ def parse_citations(answer: str, evidence: list[Evidence]) -> list[int]:
     whole design exists to avoid.
     """
     used: list[int] = []
-    for match in _CITATION.finditer(answer):
-        position = int(match.group(1))
+    for position in citation_numbers(answer):
         if 1 <= position <= len(evidence) and position not in used:
             used.append(position)
     return used
