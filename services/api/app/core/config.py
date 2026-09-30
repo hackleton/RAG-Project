@@ -113,6 +113,15 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         extra="ignore",
         case_sensitive=False,
+        # A failed check must not print the raw input. Pydantic's error message
+        # includes `input_value=` - here, every setting as read from the
+        # environment, including OPENROUTER_API_KEY, JWT_SECRET_KEY and the
+        # passwords inside the database URLs - cut down in the middle. Whether
+        # a secret survived the cut depended on how many settings there were:
+        # with a short environment, a fake key was printed in full. A config
+        # error is exactly when logs get read and shared. The message itself
+        # still says what is wrong.
+        hide_input_in_errors=True,
     )
 
     # --- Application -----------------------------------------------------

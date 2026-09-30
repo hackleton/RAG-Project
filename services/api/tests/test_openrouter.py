@@ -281,6 +281,27 @@ def test_the_key_does_not_appear_when_settings_are_printed() -> None:
 # --- configuration ------------------------------------------------------------
 
 
+def test_a_settings_error_never_prints_a_secret() -> None:
+    """Found on the first real run: the check refusing a bad LLM_MODEL printed
+    `input_value={... 'openrouter_api_key': ...}`. With a short environment
+    the key appeared in full, so a misconfigured deployment would have written
+    it into its logs."""
+    with pytest.raises(ValidationError) as raised:
+        Settings(
+            _env_file=None,  # type: ignore[call-arg]
+            app_env=AppEnv.CI,
+            llm_provider=LLMProviderName.OPENROUTER,
+            llm_model="not-an-openrouter-name",
+            openrouter_api_key=KEY,
+            jwt_secret_key="another-secret-that-must-not-print-0123456789",
+        )
+    message = str(raised.value)
+    assert "company/model" in message  # still says what to fix
+    assert KEY not in message
+    assert "another-secret-that-must-not-print" not in message
+    assert "input_value" not in message
+
+
 def test_openrouter_without_a_key_refuses_to_start() -> None:
     # Explicitly None: Docker passes .env into the container's environment, so
     # once a real key is there, leaving this out would quietly supply it and
