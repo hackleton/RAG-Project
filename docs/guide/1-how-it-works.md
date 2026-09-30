@@ -208,8 +208,8 @@ it is off by default, and every query passes a chain of guards
 
 ## The pieces, and what they stand in for
 
-This version runs entirely on one machine. The project plan named Azure
-services. Each one sits behind an interface, so swapping one in means adding an
+By default, this version runs entirely on one machine. The project plan named
+Azure services. Each one sits behind an interface, so swapping one in means adding an
 adapter, not rewriting the system ([decision 11](../decisions.md)).
 
 | Job | Here | In the plan |
@@ -220,7 +220,7 @@ adapter, not rewriting the system ([decision 11](../decisions.md)).
 | Search index | Qdrant | Azure AI Search |
 | Meaning search | `bge-small-en-v1.5` | Azure OpenAI embeddings |
 | Reranking | `ms-marco-MiniLM-L-6-v2` | Azure semantic ranker |
-| Writing answers | Ollama (phi3), or a fixed stub for tests | Azure OpenAI |
+| Writing answers | Ollama (phi3), OpenRouter (hosted models), or a fixed stub for tests | Azure OpenAI |
 | Cache and rate limits | Redis | Azure Cache for Redis |
 
 **Next:** [2. How we measure it](2-measuring-it.md)

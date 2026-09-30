@@ -4,11 +4,16 @@ Grounded question answering over **synthetic** healthcare documents and structur
 patient data: hybrid retrieval with citations, a multi-tool agent, a measured
 evaluation harness, and the security controls a system like this needs.
 
-**v1 runs entirely on your machine.** No cloud account, no API keys, no data
-leaving the host. Storage, extraction, embeddings, reranking and the LLM all sit
-behind provider interfaces, so the Azure services the project plan names can be
-swapped in later as adapters rather than a rewrite — see
-[decision 11](docs/decisions.md).
+**By default it runs entirely on your machine.** No cloud account, no API keys,
+no data leaving the host. Storage, extraction, embeddings, reranking and the
+LLM all sit behind provider interfaces, so hosted services can be swapped in as
+adapters rather than a rewrite — see [decision 11](docs/decisions.md).
+
+The first such adapter exists: **OpenRouter**, for hosted models. With it
+switched on, questions and retrieved document text are sent to OpenRouter.
+The corpus is synthetic, so no real patient is involved, but it is no longer
+"nothing leaves the machine" ([decision 48](docs/decisions.md)). See
+[Using a hosted model](#using-a-hosted-model-openrouter).
 
 > Synthetic data only. No real patient data belongs in this repository or in any
 > environment it runs in. The system is an engineering project, not a clinical
@@ -272,6 +277,38 @@ Open a SQL prompt as the restricted agent login (writes should be refused):
 docker compose exec mssql bash -c "/opt/mssql-tools18/bin/sqlcmd -S localhost -U copilot_readonly -P \"\$MSSQL_READONLY_PASSWORD\" -d copilot -C"
 ```
 
+## Using a hosted model (OpenRouter)
+
+One setting moves **every** language-model call to OpenRouter: chat answers,
+the agent's planner and synthesis, and the evaluation judge. Embeddings and
+reranking stay local.
+
+1. Create a key at [openrouter.ai/keys](https://openrouter.ai/keys).
+2. Add these three lines to your `.env` (git ignores it — never put a key in
+   `.env.example` or anywhere else in the repo):
+
+   ```
+   LLM_PROVIDER=openrouter
+   LLM_MODEL=anthropic/claude-sonnet-5
+   OPENROUTER_API_KEY=your-key-here
+   ```
+
+3. Restart the API:
+
+   ```bash
+   docker compose up -d --force-recreate api
+   ```
+
+The API refuses to start if the key is missing or the model name isn't in
+OpenRouter's `company/model` form, so a mistake shows up at once rather than
+on the first question. The boot log says `llm_prompts_leave_host`. After that,
+the cost column on the dashboard (`/metrics`) shows real money, taken from
+OpenRouter's own figure for each call. A full 107-question evaluation on
+`claude-sonnet-5` costs roughly $0.30.
+
+To go back to local models, set `LLM_PROVIDER` back to `echo` or `ollama`. CI
+and the test suite always use the stub and never need a key.
+
 ## Running it like production
 
 `docker-compose.prod.yml` is an overlay on the same compose file. It builds the
@@ -341,7 +378,7 @@ Local components and what they stand in for:
 | Keyword + vector search | Qdrant: sparse (BM25, server-side IDF) + dense | Azure AI Search hybrid |
 | Fusion | RRF in the application | Azure AI Search RRF |
 | Reranking | local cross-encoder | Azure AI Search semantic ranker |
-| Generation | Ollama, or a deterministic stub | Azure OpenAI chat deployment |
+| Generation | Ollama, OpenRouter, or a deterministic stub | Azure OpenAI chat deployment |
 | Cache and rate control | Redis (or in-process, or off) | Azure Cache for Redis |
 | Tracing and metrics | in-process spans, stored with each answer | Application Insights |
 

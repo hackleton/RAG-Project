@@ -32,6 +32,16 @@ class MeasuredLLM:
     def model(self) -> str:
         return self._inner.model
 
+    async def aclose(self) -> None:
+        """Release the provider's connection, if it holds one.
+
+        Only the hosted provider keeps a client open; the others have nothing
+        to close, so this asks rather than requiring it of the protocol.
+        """
+        close = getattr(self._inner, "aclose", None)
+        if close is not None:
+            await close()
+
     async def complete(self, *, system: str, user: str) -> Completion:
         started = time.perf_counter()
         with span("llm.complete", model=self._inner.model) as record:

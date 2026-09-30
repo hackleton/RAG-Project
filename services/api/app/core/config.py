@@ -20,7 +20,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Annotated, Literal
 
-from pydantic import AnyHttpUrl, BeforeValidator, Field, model_validator
+from pydantic import AnyHttpUrl, BeforeValidator, Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 # Sentinel used by .env.example and docker-compose for local development only.
@@ -36,6 +36,9 @@ class AppEnv(StrEnum):
 
 class LLMProvider(StrEnum):
     OLLAMA = "ollama"
+    # Hosted models through OpenRouter's OpenAI-compatible API. The one provider
+    # whose prompts leave this machine - see decision 48.
+    OPENROUTER = "openrouter"
     # Deterministic stub: composes an answer from the retrieved context without
     # a model. Keeps the pipeline end-to-end testable in CI, where no LLM runs.
     ECHO = "echo"
@@ -99,6 +102,9 @@ def _empty_to_none(value: object) -> object:
 
 OptionalStr = Annotated[str | None, BeforeValidator(_empty_to_none)]
 OptionalUrl = Annotated[AnyHttpUrl | None, BeforeValidator(_empty_to_none)]
+# A credential. `SecretStr` renders as '**********' in repr, str and logs, so
+# printing the settings object - or a traceback that includes it - cannot leak it.
+OptionalSecret = Annotated[SecretStr | None, BeforeValidator(_empty_to_none)]
 
 
 class Settings(BaseSettings):
@@ -179,12 +185,28 @@ class Settings(BaseSettings):
     reranker_model: str = "Xenova/ms-marco-MiniLM-L-6-v2"
     model_cache_dir: Path = Path("./.data/models")
 
-    # --- Local LLM (stands in for an Azure OpenAI chat deployment) --------
+    # --- LLM (stands in for an Azure OpenAI chat deployment) --------------
+    # One setting for every language-model call: chat answers, the agent's
+    # planner and synthesis, and the evaluation judge.
     llm_provider: LLMProvider = LLMProvider.ECHO
     ollama_base_url: AnyHttpUrl = AnyHttpUrl("http://localhost:11434")
+    # The model name *for the configured provider*: `phi3:latest` for Ollama,
+    # `anthropic/claude-sonnet-5` for OpenRouter. Changing the provider means
+    # changing this too, which the validator below checks for OpenRouter.
     llm_model: str = "llama3.1:8b"
     llm_temperature: float = 0.0
     llm_max_tokens: int = 1024
+    # OpenRouter. The key comes from the environment (.env, which git ignores)
+    # and is never logged; see app/providers/llm.py.
+    openrouter_api_key: OptionalSecret = None
+    openrouter_base_url: AnyHttpUrl = AnyHttpUrl("https://openrouter.ai/api/v1")
+    # Per attempt. A hosted model answers in seconds; a minute means something
+    # is wrong, and the retry policy is better placed to deal with it than a
+    # user waiting on a spinner.
+    openrouter_timeout_seconds: float = 60.0
+    # Retries for transient failures only (408, 429, 502, 503, network errors).
+    # Never for 400/401/402/403: retrying those just repeats the refusal.
+    openrouter_max_retries: int = 2
 
     # --- Retrieval defaults ----------------------------------------------
     # Project plan section 14 treats every one of these as an experiment
@@ -292,6 +314,24 @@ class Settings(BaseSettings):
             raise ValueError("CHUNK_OVERLAP_TOKENS must be smaller than CHUNK_TARGET_TOKENS.")
         if self.retrieval_top_k > self.retrieval_candidate_pool:
             raise ValueError("RETRIEVAL_TOP_K cannot exceed RETRIEVAL_CANDIDATE_POOL.")
+
+        # Checked in every environment, local included: these are configuration
+        # mistakes, not production hardening, and the alternative is an API
+        # that boots fine and then fails on the first question somebody asks.
+        if self.llm_provider is LLMProvider.OPENROUTER:
+            if self.openrouter_api_key is None:
+                raise ValueError(
+                    "LLM_PROVIDER=openrouter needs OPENROUTER_API_KEY. Add it to .env "
+                    "(git ignores that file); never put it in source."
+                )
+            if "/" not in self.llm_model:
+                # OpenRouter names are `company/model`. Without this check, the
+                # Ollama default `llama3.1:8b` would be sent to OpenRouter and
+                # every call would fail with a 400.
+                raise ValueError(
+                    f"LLM_MODEL={self.llm_model!r} is not an OpenRouter model name. "
+                    "Use the company/model form, e.g. anthropic/claude-sonnet-5."
+                )
 
         if self.is_local:
             return self

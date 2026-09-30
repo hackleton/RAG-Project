@@ -1290,3 +1290,60 @@ caller who is not allowed to see it. The message ("No accessible patient
 matches that identifier") covers both honestly. Every patient ID input is now
 capped at 64 characters, as the agent's already was, so a refusal can always
 be written to the 128-character audit column.
+
+---
+
+## 48. OpenRouter for hosted models, and prompts may now leave the machine
+
+**Decision.** A third LLM provider, `OpenRouterLLM`, sits beside Ollama and the
+stub behind the same protocol. `LLM_PROVIDER=openrouter` sends every
+language-model call through it: chat answers, the agent's planner and
+synthesis, and the evaluation judge. Embeddings, reranking and storage stay
+local. The stub remains the default, and CI and the test suite never need a
+key.
+
+**Why.** Asked for by the user, and it is the plan's own architecture: section
+7 names a hosted model (Azure OpenAI) for generation. The local models
+measured in Sprints 5 and 8 are the weakest part of the system. phi3 invents
+a number in 7–9% of answers and declines only 2 of 7 unanswerable questions.
+Decision 11 put every model behind an interface for exactly this change, and
+this is one adapter and three settings, with no change to any caller.
+
+**What this changes, stated plainly.** v1 was "nothing leaves the machine".
+With this provider on, the question and the retrieved document text go to
+OpenRouter and on to the model's provider. The corpus is synthetic by rule
+(PRD section 2), so no real patient is exposed. What changes is the promise,
+and the README and the guide now say so. The API also logs
+`llm_prompts_leave_host` at boot, so an operator sees it without reading the
+code.
+
+**Details that were checked, not assumed:**
+
+* **An error can arrive with HTTP 200.** OpenRouter documents that a provider
+  failing after the response has started produces a `200 OK` whose body holds
+  only an `error`. The adapter checks the body, so that cannot become an empty
+  answer.
+* **Cost is OpenRouter's own figure** (`usage.cost`, returned with every
+  non-streaming completion). A missing cost is recorded as unknown, not as
+  zero. This is the first provider for which the dashboard's cost column
+  means something.
+* **Retries only when retrying can help:** 408, 429, 502, 503 and dropped
+  connections, up to two retries, honouring `Retry-After` (capped at 20 s).
+  400, 401, 402 and 403 fail at once, with a message that names the fix.
+* **The key is a `SecretStr`**, used only as the `Authorization` header. Tests
+  check it never appears in an error, a log line or a printed settings object.
+  Provider error messages are logged cut to 200 characters, and
+  `error.metadata` is never logged, because a moderation refusal can echo the
+  flagged input, which is our prompt.
+* **Misconfiguration fails at boot, in every environment:** `openrouter`
+  without a key, or with a model name that is not `company/model` (such as the
+  Ollama default), refuses to start instead of failing on the first question.
+
+**Cost.** Money, now measured rather than zero: a full 107-question evaluation
+on `anthropic/claude-sonnet-5` is estimated at about $0.30 from the phi3 run's
+token counts. Also latency to a remote service, a dependency on OpenRouter's
+availability, and the local-only property above.
+
+**Revisit if.** Real patient data is ever in scope. Hosted generation would
+then need a data-processing agreement and a provider with zero data retention,
+or a return to local models. That is not a setting to flip.

@@ -18,6 +18,7 @@ from app.api.router import api_router, root_router
 from app.cache.backend import build_cache
 from app.cache.embeddings import CachingEmbeddingProvider
 from app.cache.ranking import RankingCache
+from app.core.config import LLMProvider as LLMProviderName
 from app.core.config import Settings, get_settings
 from app.core.db import (
     dispose_engine,
@@ -101,6 +102,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             api_prefix=settings.api_prefix,
             embedding_provider=settings.embedding_provider.value,
             llm_provider=settings.llm_provider.value,
+            llm_model=settings.llm_model,
             retrieval_mode=settings.retrieval_mode,
             planner=settings.effective_planner.value,
             sql_tool_enabled=settings.sql_tool_enabled,
@@ -115,9 +117,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 backend=settings.cache_backend.value,
                 consequence="login throttling and ranking reuse are per-process",
             )
+        if settings.llm_provider is LLMProviderName.OPENROUTER:
+            # Said once, at boot, where an operator reads it: this deployment
+            # sends prompts - questions and retrieved document text - off the
+            # machine. The corpus is synthetic by rule; see decision 48.
+            logger.info(
+                "llm_prompts_leave_host",
+                provider="openrouter",
+                model=settings.llm_model,
+                stays_local="embeddings, reranking, storage",
+            )
         try:
             yield
         finally:
+            await application.state.llm.aclose()
             await application.state.vector_store.close()
             await application.state.cache.close()
             await dispose_readonly_engine()

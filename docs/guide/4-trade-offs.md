@@ -125,6 +125,12 @@ the ten a reviewer is most likely to question.
 - **Costs:** local models are much weaker and slower than hosted ones, so our
   absolute quality numbers don't transfer. The *relative* results (A vs B) do.
   ([decision 11](../decisions.md))
+- **Changed since:** hosted models are now one setting away, through
+  OpenRouter. That buys a far stronger model for about $0.30 per full
+  evaluation, and gives up "nothing leaves the machine": questions and
+  retrieved text go to OpenRouter. Because the data is synthetic, that trade
+  is acceptable here. With real patients it would need a data agreement first
+  ([decision 48](../decisions.md)).
 
 ---
 
