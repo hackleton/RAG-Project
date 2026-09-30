@@ -22,7 +22,10 @@ from app.core.errors import ServiceUnavailableError
 from app.providers import llm as llm_module
 from app.providers.llm import OpenRouterLLM, build_llm_provider
 
-KEY = "sk-or-v1-test-key-that-must-never-be-logged-0123456789"
+# Deliberately *not* shaped like a real key (no `sk-or-v1-` prefix): secret
+# scanners match that prefix, and a fake key that trips one blocks a push and
+# teaches people to dismiss the alert that will one day be real.
+KEY = "fake-openrouter-key-for-tests-only-0123456789"
 MODEL = "anthropic/claude-sonnet-5"
 
 
