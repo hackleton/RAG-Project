@@ -265,6 +265,7 @@ class EvaluationHarness:
             context=context,
             supplied_blocks=len(answer.sources),
             supplied_sources=[chunk.document_filename for chunk in answer.sources],
+            question=case.question,
         )
         out_of_scope = _out_of_scope(answer.sources, principal)
         named = grading.leaked_identifiers(
@@ -347,11 +348,20 @@ def _verdict(
     if case.category is CaseCategory.UNANSWERABLE:
         return graded.refused and not graded.leaked
 
-    # Everything else is a retrieval question: the evidence must be found, and
-    # the answer must not invent numbers. Fact coverage is reported but not part
-    # of the verdict, because with the echo provider it measures the stub's
-    # phrasing rather than the system.
-    return ranking.relevant_retrieved > 0 and graded.faithful and not graded.hallucinated_citations
+    # Everything else is a retrieval question: the evidence must be found, there
+    # must be an answer, and it must not invent numbers. Fact coverage is
+    # reported but not part of the verdict, because with the echo provider it
+    # measures the stub's phrasing rather than the system.
+    #
+    # `answered` was added after a blank reply passed: a model that spent its
+    # whole budget on hidden reasoning returned nothing, and nothing invents no
+    # numbers and cites nothing wrongly.
+    return (
+        ranking.relevant_retrieved > 0
+        and graded.answered
+        and graded.faithful
+        and not graded.hallucinated_citations
+    )
 
 
 def _out_of_scope(sources: Sequence[RetrievedChunk], principal: Principal) -> list[str]:
@@ -475,6 +485,12 @@ def _generation_metrics(
         ),
         "unsupported_number_rate": _ratio(
             sum(1 for outcome in succeeded if not outcome.graded.faithful), len(succeeded)
+        ),
+        # Answers that came back blank without an error. Structurally zero for
+        # the stub; for a reasoning model it is the share of questions where the
+        # thinking used the whole output budget.
+        "empty_answer_rate": _ratio(
+            sum(1 for outcome in succeeded if not outcome.graded.answered), len(succeeded)
         ),
         # Answers naming a document they were never given. Structurally zero
         # against the echo stub, which only ever repeats its context - like the

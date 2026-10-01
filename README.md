@@ -306,6 +306,15 @@ the cost column on the dashboard (`/metrics`) shows real money, taken from
 OpenRouter's own figure for each call. A full 107-question evaluation on
 `claude-sonnet-5` costs roughly $0.30.
 
+**Thinking is off by default** (`OPENROUTER_REASONING=off`). Many hosted models
+"think" before answering. `deepseek/deepseek-v4.1-flash` does so at high effort
+unless told not to, and on a simple lab question it used its whole output
+allowance thinking in 2 of 3 tries: 150 seconds, then a blank answer, with the
+thinking still billed. Reading documents and quoting them doesn't need it. If
+you raise it (`low`, `medium`, `high`), raise `LLM_MAX_TOKENS` too. A model that
+runs out of tokens before answering now produces a clear error instead of a
+blank reply ([decision 49](docs/decisions.md)).
+
 To go back to local models, set `LLM_PROVIDER` back to `echo` or `ollama`. CI
 and the test suite always use the stub and never need a key.
 

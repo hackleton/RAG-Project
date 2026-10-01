@@ -27,6 +27,7 @@ import re
 from typing import Any, Protocol
 
 from app.agents.registry import ToolCall, ToolRegistry
+from app.core.errors import ServiceUnavailableError
 from app.core.logging import get_logger
 from app.providers.llm import LLMProvider
 from app.security.principal import Principal
@@ -193,10 +194,24 @@ class LlmPlanner:
         max_calls: int,
     ) -> list[ToolCall]:
         catalogue = self._registry.catalogue(principal)
-        completion = await self._llm.complete(
-            system=PLANNER_SYSTEM_PROMPT,
-            user=_planner_prompt(question, catalogue, patient_external_id, max_calls),
-        )
+        try:
+            completion = await self._llm.complete(
+                system=PLANNER_SYSTEM_PROMPT,
+                user=_planner_prompt(question, catalogue, patient_external_id, max_calls),
+            )
+        except ServiceUnavailableError as exc:
+            # A model that fails - unreachable, or out of tokens before it
+            # answered - is handled like one that returned nonsense: route by
+            # the rules. Routing is the one step that can still go right
+            # without it, and the gate checks whatever is chosen either way.
+            logger.warning("planner_model_failed", error=str(exc))
+            return await self._fallback.plan(
+                question,
+                principal,
+                patient_external_id=patient_external_id,
+                available=available,
+                max_calls=max_calls,
+            )
 
         proposed = _parse_plan(completion.text)
         if proposed is None:

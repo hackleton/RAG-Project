@@ -204,9 +204,11 @@ class OpenRouterLLM:
         timeout_seconds: float = 60.0,
         max_retries: int = 2,
         backoff_seconds: float = 1.0,
+        reasoning: str = "off",
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
         self._api_key = api_key
+        self._reasoning = reasoning
         self._model = model
         self._base_url = base_url.rstrip("/")
         self._temperature = temperature
@@ -228,20 +230,22 @@ class OpenRouterLLM:
             self._client = None
 
     async def complete(self, *, system: str, user: str) -> Completion:
-        body = await self._post(
-            {
-                "model": self._model,
-                "messages": [
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": user},
-                ],
-                # Temperature 0 for the same reason as the local provider: a
-                # grounded answer should not be creative, and an evaluation run
-                # should be as repeatable as the model allows.
-                "temperature": self._temperature,
-                "max_tokens": self._max_tokens,
-            }
-        )
+        payload: dict[str, Any] = {
+            "model": self._model,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            # Temperature 0 for the same reason as the local provider: a
+            # grounded answer should not be creative, and an evaluation run
+            # should be as repeatable as the model allows.
+            "temperature": self._temperature,
+            "max_tokens": self._max_tokens,
+        }
+        reasoning = _reasoning_field(self._reasoning)
+        if reasoning is not None:
+            payload["reasoning"] = reasoning
+        body = await self._post(payload)
 
         choices = body.get("choices")
         if body.get("error") or not choices:
@@ -249,15 +253,32 @@ class OpenRouterLLM:
 
         choice = choices[0]
         message = choice.get("message") or {}
-        if choice.get("finish_reason") == "length":
-            # Not an error - the answer is usable - but a cut-off answer can end
-            # mid-citation, and whoever reads the logs should know why.
+        finish_reason = choice.get("finish_reason")
+        text = str(message.get("content") or "").strip()
+        if finish_reason == "length":
+            # A cut-off answer can end mid-citation, and whoever reads the logs
+            # should know why.
             logger.warning("llm_truncated", model=self._model, max_tokens=self._max_tokens)
+
+        if not text:
+            # Never hand a blank answer upward. OpenRouter documents the cause
+            # that was measured here: hidden reasoning used the whole
+            # `max_tokens` budget, so `content` is empty and `finish_reason` is
+            # "length" - and the reasoning was still billed. A blank answer in
+            # the UI looks like a system with nothing to say; an error says what
+            # to change.
+            logger.warning("llm_empty_answer", model=self._model, finish_reason=finish_reason)
+            raise ServiceUnavailableError(
+                "The model used its whole output allowance before writing an answer. "
+                "Set OPENROUTER_REASONING=off, or raise LLM_MAX_TOKENS."
+                if finish_reason == "length"
+                else "The model returned an empty answer."
+            )
 
         usage = body.get("usage") or {}
         cost = usage.get("cost")
         return Completion(
-            text=str(message.get("content") or "").strip(),
+            text=text,
             model=self._model,
             prompt_tokens=usage.get("prompt_tokens"),
             completion_tokens=usage.get("completion_tokens"),
@@ -374,6 +395,20 @@ def _describe(code: int, provider_message: str, model: str, attempts: int) -> st
     return f"OpenRouter returned an error (HTTP {code})."
 
 
+def _reasoning_field(setting: str) -> dict[str, Any] | None:
+    """OpenRouter's `reasoning` request field for a setting, or None to omit it.
+
+    "off" uses `enabled: false`, not `effort: "none"`: OpenRouter documents
+    both, but each model lists the efforts it supports, and
+    deepseek-v4.1-flash lists only max/high/low, so "none" is not one of them.
+    """
+    if setting == "default":
+        return None
+    if setting == "off":
+        return {"enabled": False}
+    return {"effort": setting}
+
+
 def _json_or_empty(response: httpx.Response) -> dict[str, Any]:
     try:
         body = response.json()
@@ -416,6 +451,7 @@ def build_llm_provider(settings: Settings) -> LLMProvider:
             max_tokens=settings.llm_max_tokens,
             timeout_seconds=settings.openrouter_timeout_seconds,
             max_retries=settings.openrouter_max_retries,
+            reasoning=settings.openrouter_reasoning,
         )
     return OllamaLLM(
         base_url=str(settings.ollama_base_url),

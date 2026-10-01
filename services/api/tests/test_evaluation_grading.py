@@ -288,3 +288,72 @@ def test_a_malformed_line_names_its_line_number(tmp_path: object) -> None:
 
     with pytest.raises(DatasetError, match="line 1"):
         load_dataset(path)
+
+
+def test_an_empty_answer_is_not_answered() -> None:
+    """A blank reply invents no number and cites nothing wrongly, so every other
+    check here passes it. That is how a model that spent its whole budget on
+    hidden reasoning was graded as a pass; `answered` is what fails it now."""
+    graded = grading.grade(
+        "   ",
+        expected_facts=["7.4"],
+        expected_sources=[],
+        cited_sources=[],
+        context="HbA1c 7.4%",
+        supplied_blocks=1,
+    )
+    assert graded.faithful  # the trap: nothing invented
+    assert graded.answered is False
+    assert graded.as_dict()["answered"] is False
+
+
+def test_a_real_answer_is_answered() -> None:
+    graded = grading.grade(
+        "HbA1c was 7.4% [1].",
+        expected_facts=["7.4"],
+        expected_sources=[],
+        cited_sources=[],
+        context="HbA1c 7.4%",
+        supplied_blocks=1,
+    )
+    assert graded.answered is True
+
+
+# --- false alarms found by reading every flagged DeepSeek answer --------------
+#
+# All five answers the first DeepSeek run flagged for "unsupported numbers" were
+# grader mistakes. These pin down both mistakes, and that real inventions still
+# get caught.
+
+FILENAMES_CONTEXT = (
+    "[1] (SYN-0001_note_20251203.txt | section: VITAL SIGNS)\nBlood pressure 123/72 mmHg."
+)
+
+
+def test_a_number_from_the_question_is_not_invented() -> None:
+    answer = "The supplied context does not contain anything about COVID-19 vaccination."
+    assert (
+        grading.unsupported_numbers(
+            answer, "Glycaemic control guideline.", question="What about COVID-19 vaccination?"
+        )
+        == []
+    )
+
+
+def test_a_date_from_a_file_name_written_with_dashes_is_supported() -> None:
+    """The model sees `..._20251203.txt` and writes 2025-12-03."""
+    answer = "The only reading is 123/72 mmHg, dated 2025-12-03 [1]."
+    assert grading.unsupported_numbers(answer, FILENAMES_CONTEXT) == []
+
+
+def test_a_date_found_nowhere_is_still_flagged() -> None:
+    answer = "The reading 123/72 mmHg was taken on 2024-02-11 [1]."
+    flagged = grading.unsupported_numbers(answer, FILENAMES_CONTEXT)
+    assert "2024" in flagged
+
+
+def test_an_invented_value_next_to_a_real_date_is_still_flagged() -> None:
+    """Dropping a supported date must not drop the number beside it."""
+    answer = "On 2025-12-03 the blood pressure was 150/90 mmHg [1]."
+    flagged = grading.unsupported_numbers(answer, FILENAMES_CONTEXT)
+    assert flagged == ["150", "90"]

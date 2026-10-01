@@ -216,6 +216,13 @@ class Settings(BaseSettings):
     # Retries for transient failures only (408, 429, 502, 503, network errors).
     # Never for 400/401/402/403: retrying those just repeats the refusal.
     openrouter_max_retries: int = 2
+    # Hidden "thinking" before the answer. `off` by default, because it was
+    # measured: deepseek-v4.1-flash thinks at "high" effort unless told not to,
+    # and on a simple lab-value question it spent all 1,024 output tokens
+    # thinking in 2 of 3 tries - 150 s, a blank answer, and the thinking still
+    # billed. Reading context and quoting it does not need it. `default` leaves
+    # the model's own setting; low/medium/high ask for that effort.
+    openrouter_reasoning: Literal["off", "low", "medium", "high", "default"] = "off"
 
     # --- Retrieval defaults ----------------------------------------------
     # Project plan section 14 treats every one of these as an experiment

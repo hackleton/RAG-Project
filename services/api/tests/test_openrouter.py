@@ -107,6 +107,8 @@ async def test_the_request_is_an_openai_style_chat_completion() -> None:
         ],
         "temperature": 0.0,
         "max_tokens": 512,
+        # Off unless configured otherwise - see the reasoning tests below.
+        "reasoning": {"enabled": False},
     }
 
 
@@ -131,11 +133,42 @@ async def test_a_missing_cost_is_unknown_not_free() -> None:
     assert completion.estimated_cost_usd is None
 
 
-async def test_empty_content_is_an_empty_answer_not_a_crash() -> None:
-    completion = await provider(Network(httpx.Response(200, json=answer(None)))).complete(
-        system="s", user="u"
-    )
-    assert completion.text == ""
+async def test_an_empty_answer_is_an_error_not_a_blank_reply() -> None:
+    """A blank reply in the UI looks like a system with nothing to say."""
+    with pytest.raises(ServiceUnavailableError, match="empty answer"):
+        await provider(Network(httpx.Response(200, json=answer(None)))).complete(
+            system="s", user="u"
+        )
+
+
+async def test_reasoning_that_uses_the_whole_budget_says_what_to_change(logs: Recorder) -> None:
+    """Measured on deepseek-v4.1-flash: thinking used all 1,024 output tokens,
+    `content` came back empty with finish_reason "length", 150 s, still billed."""
+    body = answer(None)
+    body["choices"][0]["finish_reason"] = "length"
+    with pytest.raises(ServiceUnavailableError, match="OPENROUTER_REASONING=off"):
+        await provider(Network(httpx.Response(200, json=body))).complete(system="s", user="u")
+    assert [event for event, _ in logs.events] == ["llm_truncated", "llm_empty_answer"]
+
+
+@pytest.mark.parametrize(
+    ("setting", "expected"),
+    [
+        ("off", {"enabled": False}),
+        ("low", {"effort": "low"}),
+        ("high", {"effort": "high"}),
+        ("default", None),
+    ],
+)
+async def test_the_reasoning_setting_reaches_the_request(
+    setting: str, expected: dict | None
+) -> None:
+    network = Network(httpx.Response(200, json=answer()))
+    await provider(network, reasoning=setting).complete(system="s", user="u")
+    sent = json.loads(network.requests[0].content)
+    # "off" uses enabled:false rather than effort:"none", because a model lists
+    # the efforts it supports and deepseek-v4.1-flash does not list "none".
+    assert sent.get("reasoning") == expected
 
 
 async def test_a_truncated_answer_is_logged(logs: Recorder) -> None:

@@ -1347,3 +1347,46 @@ availability, and the local-only property above.
 **Revisit if.** Real patient data is ever in scope. Hosted generation would
 then need a data-processing agreement and a provider with zero data retention,
 or a return to local models. That is not a setting to flip.
+
+---
+
+## 49. Hidden reasoning is off by default, and a blank answer is an error
+
+**Decision.** `OPENROUTER_REASONING` (`off` | `low` | `medium` | `high` |
+`default`) controls a hosted model's hidden "thinking", and it is `off` by
+default. When a model returns no text, the provider raises an error that names
+the fix instead of returning blank text. The planner falls back to its rules
+when the model call fails, as it already did for unreadable output. The grader
+fails an empty answer, and the report counts `empty_answer_rate`. Separately,
+the unsupported-number check accepts numbers from the question and dates
+written as 2025-12-03 when the context holds them, in that form or as
+20251203.
+
+**Why.** All of it was measured on the first run of
+`deepseek/deepseek-v4.1-flash` (see
+`evaluation/experiments/openrouter-deepseek-20261001.md`):
+
+* The model thinks at high effort by default. On one lab question, 2 of 3
+  tries used all 1,024 output tokens thinking and came back blank after about
+  150 s. OpenRouter documents that the thinking is billed anyway. With
+  thinking off: 3 of 3 answered, no errors and no blanks across 107 cases, and
+  p95 fell from 12.0 s to 3.1 s.
+* That blank answer passed the evaluation. It invented no numbers and cited
+  nothing wrongly, which was all the pass rule checked.
+* All 5 "invented numbers" in the next run were grader mistakes: dates copied
+  from file names in another format, and "COVID-19" repeated from the
+  question. Fixed, the model's rate is 0 of 107. Re-grading phi3 the same way
+  only moved it from 8.4% to 7.5%, because its remaining flags are real
+  inventions.
+
+"off" is sent as `reasoning: {"enabled": false}`, not `effort: "none"`: the
+model lists only `max`, `high` and `low` among its efforts.
+
+**Cost.** Questions that would benefit from reasoning (multi-step comparisons
+across visits) don't get it unless the setting is raised, and raising it needs
+a larger `LLM_MAX_TOKENS`. The grader's date rule is slightly more lenient. A
+date counts as supported only if the context holds it, and a value beside it
+is still checked; tests pin both.
+
+**Revisit if.** A question category starts failing in ways reasoning would fix.
+The evaluation can measure `low` against `off` for about $0.02 a run.

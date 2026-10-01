@@ -88,6 +88,11 @@ class GradedAnswer:
     faithful: bool
     refused: bool
     leaked: bool
+    # False for an empty answer. Every other check here passes an empty
+    # answer by default - it invents no number and cites nothing wrongly -
+    # which is how a blank reply from a model that spent its whole budget
+    # thinking was graded as a pass.
+    answered: bool = True
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -102,6 +107,7 @@ class GradedAnswer:
             "faithful": self.faithful,
             "refused": self.refused,
             "leaked": self.leaked,
+            "answered": self.answered,
         }
 
 
@@ -114,6 +120,7 @@ def grade(
     context: str,
     supplied_blocks: int,
     supplied_sources: Sequence[str] = (),
+    question: str = "",
 ) -> GradedAnswer:
     """Grade one answer against its case and the context it was given.
 
@@ -124,7 +131,7 @@ def grade(
     """
     found, missing = _fact_coverage(answer, expected_facts)
     relevant = [any(want.matches(got) for want in expected_sources) for got in cited_sources]
-    unsupported = unsupported_numbers(answer, context)
+    unsupported = unsupported_numbers(answer, context, question)
     invented = fabricated_sources(answer, supplied_sources)
 
     return GradedAnswer(
@@ -142,6 +149,7 @@ def grade(
         # existing number does not silently change meaning.
         faithful=not unsupported,
         refused=is_refusal(answer),
+        answered=bool(answer.strip()),
         leaked=is_leak(answer),
     )
 
@@ -212,14 +220,36 @@ def fabricated_sources(answer: str, supplied: Sequence[str]) -> list[str]:
     return list(seen.values())
 
 
-def unsupported_numbers(answer: str, context: str) -> list[str]:
+_ISO_DATE = re.compile(r"\b(\d{4})-(\d{2})-(\d{2})\b")
+
+
+def unsupported_numbers(answer: str, context: str, question: str = "") -> list[str]:
     """Numbers stated in the answer that do not appear in the context.
 
     Compared as numeric values rather than as text, so "7.40" in the answer is
     supported by "7.4" in the context. Citation markers are removed first.
+
+    Two things count as supported that a bare number match missed. Both were
+    found by reading every answer the first DeepSeek run flagged: all five
+    flags were wrong, and the model's real invented-number count was zero.
+
+    * **Numbers in the question.** "COVID-19" repeated from the question is not
+      an invented 19.
+    * **A date written the other way.** The model is shown file names such as
+      `SYN-0001_note_20251203.txt`, and writes the date as 2025-12-03. Split
+      into 2025, 12 and 03, that read as three invented numbers. A dashed date
+      is supported when the context or the question holds it in either form.
     """
-    grounded = {_as_number(match.group()) for match in _NUMBER.finditer(context)}
-    prose = strip_citations(answer)
+    source = f"{context}\n{question}"
+    grounded = {_as_number(match.group()) for match in _NUMBER.finditer(source)}
+    compact_source = source.replace("-", "")
+
+    def _drop_supported_date(match: re.Match[str]) -> str:
+        dashed = match.group(0)
+        compact = dashed.replace("-", "")
+        return " " if dashed in source or compact in compact_source else dashed
+
+    prose = _ISO_DATE.sub(_drop_supported_date, strip_citations(answer))
     seen: list[str] = []
     for match in _NUMBER.finditer(prose):
         value = _as_number(match.group())
